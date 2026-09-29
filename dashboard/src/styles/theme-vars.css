@@ -29,6 +29,18 @@ html[data-theme="light"] {
   --fn-bg-glass: rgba(255, 255, 255, 0.8);
   --fn-bg-sidebar: #ffffff;
 
+  /* ---- Background layering (D11 three layers, UI.md 2.7) ----
+     layer 1 page  = --fn-bg-layout   (lightest grey)
+     layer 2 group = --fn-bg-group    kanban columns / groups / docks
+     layer 3 card  = --fn-bg-card     task & message cards (whitest)
+     Light reads "whiter towards the user". The dark block below reads
+     "brighter towards the user" instead - the two directions are opposite on
+     purpose; never copy one block's mapping into the other. */
+  --fn-bg-group: #e8eaef;
+  --fn-bg-card: var(--fn-bg-primary);
+  /* Card / inner-panel surface alias; must stay equal to --fn-bg-card. */
+  --fn-card-surface: var(--fn-bg-card);
+
   /* ---- Text ---- */
   --fn-text-primary: #111827;
   --fn-text-secondary: #4b5563;
@@ -182,6 +194,16 @@ html[data-theme="dark"] {
   --fn-bg-info-light: rgba(59, 130, 246, 0.08);
   --fn-bg-glass: rgba(14, 14, 14, 0.8);
   --fn-bg-sidebar: #141414;
+
+  /* ---- Background layering (D11 three layers, UI.md 2.7) ----
+     Same three layers as the light block, but the direction is inverted: dark
+     reads "brighter towards the user" (page -> group -> card). The card surface
+     must NOT be --fn-bg-primary here: that is darker than the group layer and
+     would invert the stack (UI.md 2.1 / AC-28). */
+  --fn-bg-group: var(--fn-bg-secondary);
+  --fn-bg-card: var(--fn-bg-tertiary);
+  /* Card / inner-panel surface alias; must stay equal to --fn-bg-card. */
+  --fn-card-surface: var(--fn-bg-card);
 
   /* ---- Text ---- */
   --fn-text-primary: rgba(255, 255, 255, 0.9);
