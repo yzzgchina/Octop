@@ -5,7 +5,12 @@ second project entity, so ``project_id`` is ``NOT NULL UNIQUE ... ON DELETE CASC
 (1:1 and same-lifetime, matching ``project_tasks.project_id``). Added are four tables
 (``team_runs`` / ``team_run_phases`` / ``team_run_members`` / ``project_task_findings``),
 thirteen ``project_tasks`` columns, two ``project_artifacts`` columns and one ``threads``
-column. All additive -- no table rebuild, no ``migrate.py`` helper.
+column. All additive -- no table rebuild.
+
+F4: the numbered pair is reached through the generic SQL path, so a database whose
+recorded watermark is already past 26 never applies it. ``_ensure_team_runs_schema`` is
+the unconditional backstop that repairs both halves (see
+``test_a_watermark_that_skipped_026_is_repaired``).
 
 The "at most one lead per run" rule is a PARTIAL UNIQUE INDEX; a partial predicate is
 not expressible as an inline table constraint in either dialect, so it is emitted as a
@@ -19,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from octop.infra.db import migrate
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 
@@ -180,7 +186,51 @@ def test_the_pair_is_self_contained_on_both_dialects() -> None:
             ), body
 
 
-def test_no_migrate_helper_was_added() -> None:
-    migrate = Path("src/octop/infra/db/migrate.py").read_text(encoding="utf-8")
+def test_the_repair_helper_exists() -> None:
+    """The 023/024/025 negative does not apply: F4 requires a 026 repair helper."""
+    migrate_src = Path("src/octop/infra/db/migrate.py").read_text(encoding="utf-8")
+    assert "_ensure_team_runs_schema" in migrate_src
     for token in ("team_runs", "team_run_members", "pending_decision", "project_task_findings"):
-        assert token not in migrate, f"026 must slot into the generic SQL path (saw {token})"
+        assert token in migrate_src, f"the repair helper must cover {token}"
+
+
+def test_a_watermark_that_skipped_026_is_repaired(tmp_path: Path, monkeypatch) -> None:
+    """F4: a watermark already at 27 while 026 never applied must self-heal.
+
+    Applies the chain with 026 absent *and* the repair helpers disabled -- the
+    database an older baseline leaves behind (its own numbering, no helpers) --
+    then re-runs with the real helpers. The watermark already reads 27, so every
+    numbered file is skipped and only the unconditional group can repair the gap.
+    """
+    pool = SqlitePool(tmp_path / "octop.db")
+    real_discover = migrate._discover
+    monkeypatch.setattr(
+        migrate,
+        "_discover",
+        lambda dialect="sqlite": [
+            item for item in real_discover(dialect) if item[0] not in (19, 26)
+        ],
+    )
+    monkeypatch.setattr(migrate, "_ensure_bridge_connections_schema", lambda db: None)
+    monkeypatch.setattr(migrate, "_ensure_team_runs_schema", lambda db: None)
+    run_migrations(pool)
+
+    assert _version(pool) == 27
+    with pool.connect() as conn:
+        tables = {
+            r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert not {"bridge_connections", *NEW_TABLES} & tables
+    assert "kind" not in _columns(pool, "project_tasks")
+
+    # The fork merge brings the helpers in; nothing else can run at watermark 27.
+    monkeypatch.undo()
+    run_migrations(pool)
+
+    with pool.connect() as conn:
+        tables = {
+            r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert {"bridge_connections", *NEW_TABLES} <= tables
+    assert "kind" in _columns(pool, "project_tasks")
+    assert _version(pool) == 27, "a repair must not roll the watermark back"

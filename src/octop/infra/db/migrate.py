@@ -1562,9 +1562,34 @@ def _ensure_thread_conversation_mode_schema(db: DatabasePool) -> None:
 
 
 def _ensure_bridge_connections_schema(db: DatabasePool) -> None:
-    """Fold notes + unique display_name + auto_reconnect into unreleased v19."""
+    """Fold notes + unique display_name + auto_reconnect into unreleased v19.
+
+    A database migrated by an older Octop baseline records watermark 19 without
+    ever creating ``bridge_connections`` -- the upstream realignment moved the
+    table into 019 -- and ``run_migrations`` skips every file at or below the
+    watermark. A missing table is therefore created here from the numbered pair
+    instead of returning early: the file's ``_schema_version`` bump is dropped
+    because this is a repair, not an applied migration. The column and
+    de-duplication steps below then run as before, on either path.
+    """
     if not _table_exists(db, "bridge_connections"):
-        return
+        name = (
+            "019_bridge_connections.pg.sql"
+            if db.dialect == "postgresql"
+            else "019_bridge_connections.sql"
+        )
+        text = (
+            (_MIGRATIONS_DIR / name)
+            .read_text(encoding="utf-8")
+            .replace("UPDATE _schema_version SET version = 19;", "")
+        )
+        if db.dialect == "postgresql":
+            with db.connect() as conn:
+                for statement in _split_pg_sql(text):
+                    conn.execute(statement)
+        else:
+            with db.connect() as conn:
+                conn.executescript(text)
     _ensure_column(db, "bridge_connections", "notes", "TEXT")
     _ensure_column(db, "bridge_connections", "icon_name", "TEXT")
     _ensure_column(db, "bridge_connections", "auto_reconnect", "INTEGER NOT NULL DEFAULT 1")
@@ -1639,6 +1664,78 @@ def _ensure_projects_schema(db: DatabasePool) -> None:
     # ``executescript`` runs the whole file in one call and keeps comments.
     with db.connect() as conn:
         conn.executescript(text)
+
+
+# The additive half of 026, in file order (PLAN §F4). The tables and the columns
+# are repaired independently, so a database that already has ``team_runs`` but
+# missed these columns is repaired too.
+_TEAM_RUN_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("project_tasks", "kind", "TEXT NOT NULL DEFAULT 'work'"),
+    ("project_tasks", "acceptance", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "in_scope", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "verify", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "changed_paths", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "round", "INTEGER NOT NULL DEFAULT 1"),
+    ("project_tasks", "verdict", "TEXT"),
+    ("project_tasks", "attempt", "INTEGER NOT NULL DEFAULT 0"),
+    ("project_tasks", "attempt_id", "TEXT"),
+    ("project_tasks", "claimed_by", "TEXT"),
+    ("project_tasks", "claimed_at", "INTEGER"),
+    ("project_tasks", "started_at", "INTEGER"),
+    ("project_tasks", "phase", "TEXT"),
+    ("project_artifacts", "owner_role", "TEXT"),
+    ("project_artifacts", "phase", "TEXT"),
+    ("threads", "pending_decision", "TEXT"),
+)
+
+
+def _ensure_team_runs_schema(db: DatabasePool) -> None:
+    """Create the 026 team-run tables when the watermark skipped 026.
+
+    ``026_team_runs.sql`` is additive DDL reached through the generic SQL path,
+    so a database whose recorded watermark is already past 26 -- an older
+    baseline applied its own 027 file -- never runs it: ``team_runs`` /
+    ``team_run_phases`` / ``team_run_members`` / ``project_task_findings`` stay
+    missing. Both halves of the pair are repaired here:
+
+      * the tables (and their indexes, including the partial unique lead rule),
+        run from the numbered pair minus its ``_schema_version`` bump -- writing
+        that back would roll a v27 database down to 26;
+      * the sixteen additive columns, through ``_ensure_column``, so a database
+        that has the tables but missed the additive half is repaired as well.
+
+    At watermark <= 26 the versioned path still owes 026, and the numbered pair
+    must keep it: the file's SQLite ``ALTER TABLE ... ADD COLUMN`` statements
+    carry no ``IF NOT EXISTS``, so columns added here would make the pair fail
+    with a duplicate column. Only a watermark already past 26 proves the file
+    can never run again (F4) -- which is exactly the gap repaired here.
+
+    The pair creates ``team_runs`` before any ``ALTER``, so a missing
+    ``team_runs`` proves no 026 statement has run and the file's bare SQLite
+    ``ALTER``s cannot collide with a column that is already there. Call this
+    after ``_ensure_projects_schema``: ``team_runs.project_id`` references
+    ``projects(project_id)`` and the ``ALTER``s target ``project_tasks`` /
+    ``project_artifacts``.
+    """
+    if _current_version(db) <= 26:
+        return
+    if not _table_exists(db, "team_runs"):
+        name = "026_team_runs.pg.sql" if db.dialect == "postgresql" else "026_team_runs.sql"
+        text = (
+            (_MIGRATIONS_DIR / name)
+            .read_text(encoding="utf-8")
+            .replace("UPDATE _schema_version SET version = 26;", "")
+        )
+        if db.dialect == "postgresql":
+            with db.connect() as conn:
+                for statement in _split_pg_sql(text):
+                    conn.execute(statement)
+        else:
+            with db.connect() as conn:
+                conn.executescript(text)
+    for table, column, definition in _TEAM_RUN_ADDED_COLUMNS:
+        if _table_exists(db, table):
+            _ensure_column(db, table, column, definition)
 
 
 def _task_number(prefix: str, seq: int) -> str:
@@ -2160,3 +2257,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_user_role_schema(db)
     _ensure_bridge_connections_schema(db)
     _ensure_projects_schema(db)
+    _ensure_team_runs_schema(db)
