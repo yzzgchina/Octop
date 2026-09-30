@@ -36,10 +36,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_project_tasks_number
 -- No ``CHECK (subject_type IN ('agent','team'))``: the same-domain
 -- ``project_members.subject_type`` has none either (019_projects.sql), so the
 -- value domain stays a single repo-layer validation point (PLAN §B2.3.1).
+--
+-- ``user_id ... ON DELETE CASCADE``: lead ruling 2026-09-30 (PLAN §B2.3.1). The
+-- first draft left ``ON DELETE`` implicit (= NO ACTION); with
+-- ``PRAGMA foreign_keys = ON`` (pool.py @48) that made ``DELETE FROM users``
+-- fail for a user who was merely assigned to a task. An assignment is a
+-- dependent row -- removing the user removes it (empty set = unassigned, R21)
+-- -- and most ``REFERENCES users(id)`` in this repo already cascade
+-- (e.g. 001_initial.sql @86).
 CREATE TABLE IF NOT EXISTS project_task_owners (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id TEXT NOT NULL REFERENCES project_tasks(task_id) ON DELETE CASCADE,
-  user_id INTEGER NOT NULL REFERENCES users(id),
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   UNIQUE(task_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_project_task_owners_user ON project_task_owners(user_id);

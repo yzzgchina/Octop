@@ -14,6 +14,7 @@ import pytest
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos._base import UNSET
 from octop.infra.db.repos.agents import AgentRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.project_tasks import (
@@ -22,9 +23,11 @@ from octop.infra.db.repos.project_tasks import (
     TIMELINE_TASK_DELETED,
     TIMELINE_TASK_STATUS_CHANGED,
     TIMELINE_TASK_UPDATED,
+    AssigneeMapping,
     ProjectTaskRepo,
     TimelineRepo,
     actor_ref,
+    normalize_assignees,
 )
 from octop.infra.db.repos.projects import MEMBER_SUBJECT_USER, ProjectMemberRepo, ProjectRepo
 from octop.infra.db.repos.settings import SettingsRepo
@@ -683,3 +686,332 @@ def test_timeline_is_ordered_oldest_first(
     events = service.list_timeline(project.id, user=owner)
     assert [e.task_id for e in events] == [first.id, second.id, first.id]
     assert [e.pk for e in events] == sorted(e.pk for e in events)
+
+
+# ── R18 / R21 · the assignee normalization and the derived mirror ────────────
+#
+# PLAN §B2.3 ④ + §B2.5 (a). The mapping is a module-level pure function, so the
+# whole output face (both child-table row sets **and** the mirror pair) is one
+# expression per case. The 422 for a request that contradicts itself is B3-API's
+# (Pydantic model validator); the mapping below stays total and deterministic so
+# there is no second, hidden copy of the rule.
+
+
+def _assert_mapping(
+    mapping: AssigneeMapping | None,
+    *,
+    owners: tuple[int, ...],
+    executors: tuple[str, ...],
+    mirror: tuple[str | None, str | None],
+    changed: tuple[bool, bool],
+) -> None:
+    """Assert the whole output face: both row sets, the mirror, and which sides
+    the request actually writes (a side it did not name must keep its rows)."""
+    assert mapping is not None
+    assert mapping.owners == owners
+    assert mapping.executors == executors
+    assert (mapping.assignee_type, mapping.assignee_id) == mirror
+    assert (mapping.owners_changed, mapping.executors_changed) == changed
+
+
+def test_normalize_new_arrays_only() -> None:
+    # owners only ⇒ the mirror falls back to ('user', owners[0])
+    _assert_mapping(
+        normalize_assignees(owners=[7, 3]),
+        owners=(7, 3),
+        executors=(),
+        mirror=("user", "7"),
+        changed=(True, False),
+    )
+    # executors only ⇒ the mirror is executors[0]
+    _assert_mapping(
+        normalize_assignees(executors=["team:t1", "agent:a1"]),
+        owners=(),
+        executors=("team:t1", "agent:a1"),
+        mirror=("team", "t1"),
+        changed=(False, True),
+    )
+    # both sides at once
+    _assert_mapping(
+        normalize_assignees(owners=[7], executors=["team:t1"]),
+        owners=(7,),
+        executors=("team:t1",),
+        mirror=("team", "t1"),
+        changed=(True, True),
+    )
+    # empty arrays are a legal value (unassigned), not "missing"
+    _assert_mapping(
+        normalize_assignees(owners=[], executors=[]),
+        owners=(),
+        executors=(),
+        mirror=(None, None),
+        changed=(True, True),
+    )
+
+
+def test_mirror_prefers_the_executor_over_the_owner() -> None:
+    """★ The mirror must be ``executors[0]`` first, never 'user first'.
+
+    ``infra/projects/dispatch.py`` decides dispatchability from
+    ``assignee_type ∈ {agent, team}``: a 'user first' rule would silently strip
+    dispatch from a task that does have an executor.
+    """
+    both = normalize_assignees(owners=[7], executors=["agent:a1"])
+    assert both is not None
+    assert (both.assignee_type, both.assignee_id) == ("agent", "a1")
+    owners_only = normalize_assignees(owners=[7])
+    assert owners_only is not None
+    assert (owners_only.assignee_type, owners_only.assignee_id) == ("user", "7")
+
+
+def test_normalize_promotes_the_legacy_pair() -> None:
+    _assert_mapping(
+        normalize_assignees(assignee_type="user", assignee_id="9"),
+        owners=(9,),
+        executors=(),
+        mirror=("user", "9"),
+        changed=(True, False),
+    )
+    for kind in ("agent", "team"):
+        _assert_mapping(
+            normalize_assignees(assignee_type=kind, assignee_id="x1"),
+            owners=(),
+            executors=(f"{kind}:x1",),
+            mirror=(kind, "x1"),
+            changed=(False, True),
+        )
+    # the old NULL/NULL clear has exactly one faithful mapping: both sides empty
+    _assert_mapping(
+        normalize_assignees(assignee_type=None, assignee_id=None),
+        owners=(),
+        executors=(),
+        mirror=(None, None),
+        changed=(True, True),
+    )
+
+
+def test_normalize_with_both_shapes_is_deterministic() -> None:
+    """A request naming both shapes is a 422 in the HTTP layer (R18 ⓑ); the
+    mapping still answers, with the new array owning the side it named."""
+    _assert_mapping(
+        normalize_assignees(owners=[2], assignee_type="agent", assignee_id="a1"),
+        owners=(2,),
+        executors=("agent:a1",),
+        mirror=("agent", "a1"),
+        changed=(True, True),
+    )
+    _assert_mapping(
+        normalize_assignees(
+            owners=[2], executors=["team:t1"], assignee_type="user", assignee_id="9"
+        ),
+        owners=(2,),
+        executors=("team:t1",),
+        mirror=("team", "t1"),
+        changed=(True, True),
+    )
+
+
+def test_normalize_returns_none_when_all_six_are_absent() -> None:
+    assert normalize_assignees() is None
+    assert (
+        normalize_assignees(owners=UNSET, executors=UNSET, assignee_type=UNSET, assignee_id=UNSET)
+        is None
+    )
+
+
+def test_normalize_keeps_an_unnamed_side_from_the_stored_state() -> None:
+    """R21 ②: the absent side is *not* rewritten — it resolves to what is stored."""
+    _assert_mapping(
+        normalize_assignees(owners=[], current_owners=[7], current_executors=["team:t1"]),
+        owners=(),
+        executors=("team:t1",),
+        mirror=("team", "t1"),
+        changed=(True, False),
+    )
+    _assert_mapping(
+        normalize_assignees(executors=["agent:a1"], current_owners=[7]),
+        owners=(7,),
+        executors=("agent:a1",),
+        mirror=("agent", "a1"),
+        changed=(False, True),
+    )
+
+
+def test_normalize_dedupes_and_keeps_the_array_order() -> None:
+    _assert_mapping(
+        normalize_assignees(owners=[3, 1, 3]),
+        owners=(3, 1),
+        executors=(),
+        mirror=("user", "3"),
+        changed=(True, False),
+    )
+    _assert_mapping(
+        normalize_assignees(executors=["agent:a1", "team:t1", "agent:a1"]),
+        owners=(),
+        executors=("agent:a1", "team:t1"),
+        mirror=("agent", "a1"),
+        changed=(False, True),
+    )
+
+
+def test_normalize_refuses_a_non_executor_subject() -> None:
+    """The child table has no CHECK (PLAN §B2.3.1), so this is the domain guard."""
+    for bad in ("user:1", "expert:x", "agent", "agent:"):
+        with pytest.raises(ValueError, match="executors elements"):
+            normalize_assignees(executors=[bad])
+
+
+def _assignee_snapshot(
+    db: SqlitePool, task_id: str
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    """The four things R18/R21 talk about: both child tables, row by row."""
+    with db.connect() as conn:
+        owners = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT id, user_id FROM project_task_owners WHERE task_id = ? ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        ]
+        executors = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT id, subject_type, subject_id FROM project_task_executors"
+                " WHERE task_id = ? ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        ]
+    return owners, executors
+
+
+def test_legacy_pair_is_promoted_into_the_child_tables(
+    services: SimpleNamespace, owner: Actor
+) -> None:
+    """R18 ②: a request that only knows the old pair still lands in the new model."""
+    project = services.project_repo.create(owner_user_id=owner.id, name="Alpha")
+    member = services.user_repo.create(username="mate", password_hash="h", role="user")
+    tasks = services.project_task_repo
+
+    from_user = tasks.create(
+        project_id=project.id,
+        title="legacy user",
+        created_by=owner.id,
+        assignee_type="user",
+        assignee_id=str(member),
+    )
+    assert from_user.owners == (member,)
+    assert from_user.executors == ()
+    assert (from_user.assignee_type, from_user.assignee_id) == ("user", str(member))
+    owner_rows, executor_rows = _assignee_snapshot(services.db, from_user.id)
+    assert [row[1] for row in owner_rows] == [member]
+    assert executor_rows == []
+
+    from_agent = tasks.create(
+        project_id=project.id,
+        title="legacy agent",
+        created_by=owner.id,
+        assignee_type="agent",
+        assignee_id="a1",
+    )
+    assert from_agent.owners == ()
+    assert from_agent.executors == ("agent:a1",)
+    assert (from_agent.assignee_type, from_agent.assignee_id) == ("agent", "a1")
+
+
+def test_mirror_is_derived_and_cannot_be_hand_written(
+    services: SimpleNamespace, owner: Actor
+) -> None:
+    """R18 ⓐ: even a caller passing the old pair next to the arrays cannot make
+    the mirror disagree with ``executors[0]``."""
+    project = services.project_repo.create(owner_user_id=owner.id, name="Alpha")
+    tasks = services.project_task_repo
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner.id,
+        owners=[owner.id],
+        executors=["team:t1"],
+    )
+
+    updated = tasks.update(
+        task.id,
+        owners=[owner.id],
+        executors=["agent:a1"],
+        assignee_type="user",
+        assignee_id=str(owner.id),
+    )
+    assert updated is not None
+    assert (updated.assignee_type, updated.assignee_id) == ("agent", "a1")
+    assert updated.executors == ("agent:a1",)
+
+
+def test_patch_without_subject_fields_leaves_all_four_untouched(
+    services: SimpleNamespace, owner: Actor
+) -> None:
+    """R18 ④ / R21 ②: the field is absent ⇒ both child tables and the mirror stay."""
+    project = services.project_repo.create(owner_user_id=owner.id, name="Alpha")
+    member = services.user_repo.create(username="mate", password_hash="h", role="user")
+    tasks = services.project_task_repo
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner.id,
+        owners=[owner.id, member],
+        executors=["team:t1"],
+    )
+    before = _assignee_snapshot(services.db, task.id)
+
+    patched = tasks.update(task.id, title="renamed")
+
+    assert patched is not None
+    assert _assignee_snapshot(services.db, task.id) == before
+    assert (patched.assignee_type, patched.assignee_id) == ("team", "t1")
+    assert patched.owners == (owner.id, member)
+
+
+def test_explicit_empty_owners_clears_that_side_only(
+    services: SimpleNamespace, owner: Actor
+) -> None:
+    """R21 ①: ``PATCH {owners: []}`` ⇒ 0 rows on that side, and the response
+    side is an array (``()`` at row level, ``[]`` over HTTP)."""
+    project = services.project_repo.create(owner_user_id=owner.id, name="Alpha")
+    tasks = services.project_task_repo
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner.id,
+        owners=[owner.id],
+        executors=["agent:a1"],
+    )
+
+    cleared = tasks.update(task.id, owners=[])
+
+    assert cleared is not None
+    assert cleared.owners == ()
+    assert cleared.executors == ("agent:a1",)
+    assert _assignee_snapshot(services.db, task.id)[0] == []
+    # the mirror follows the executor that is still there
+    assert (cleared.assignee_type, cleared.assignee_id) == ("agent", "a1")
+
+    both_cleared = tasks.update(task.id, owners=[], executors=[])
+    assert both_cleared is not None
+    assert (both_cleared.owners, both_cleared.executors) == ((), ())
+    assert _assignee_snapshot(services.db, task.id) == ([], [])
+    assert (both_cleared.assignee_type, both_cleared.assignee_id) == (None, None)
+
+
+def test_task_rows_expose_both_subject_sides(services: SimpleNamespace, owner: Actor) -> None:
+    """The child rows take part in SELECT and row mapping, not just in the DDL."""
+    project = services.project_repo.create(owner_user_id=owner.id, name="Alpha")
+    member = services.user_repo.create(username="mate", password_hash="h", role="user")
+    tasks = services.project_task_repo
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner.id,
+        owners=[member],
+        executors=["team:t1"],
+    )
+
+    listed = services.project_task_repo.list_by_project(project.id)
+    assert [(t.id, t.owners, t.executors) for t in listed] == [(task.id, (member,), ("team:t1",))]

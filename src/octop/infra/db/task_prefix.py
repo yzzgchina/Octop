@@ -23,7 +23,15 @@ def derive_task_prefix(name: str, project_id: str) -> str:
     ``^[A-Z][A-Z0-9]{1,7}$`` is the frozen shape: uppercase, 2-8 characters,
     first character a letter. Non-ASCII characters are dropped, so a pure-CJK
     project name falls back to the ``project_id`` (a Crockford base32 short id).
-    ``"TASK"`` is the constant of last resort when neither input yields ASCII.
+
+    ``"TASK"`` is the constant of last resort, and it is reachable in **two**
+    ways -- not only when neither input yields ASCII, but also whenever the
+    candidate still has fewer than 2 characters after the ``project_id``
+    fallback. A short id whose ASCII prefix collapses to one character (or to
+    nothing) is such a case: ``project_id="12345A"`` -> ``"A"`` and
+    ``project_id="123456"`` -> ``""`` both return ``"TASK"``. Returning those
+    directly would emit ``A-001`` and violate the frozen number shape
+    (lead ruling 2026-09-30, PLAN §B1.1).
     """
     core = "".join(c for c in name.upper() if c.isascii() and c.isalnum())
     core = core.lstrip("0123456789")
@@ -31,4 +39,4 @@ def derive_task_prefix(name: str, project_id: str) -> str:
     if len(core) < 2:
         core = "".join(c for c in project_id.upper() if c.isascii() and c.isalnum())
         core = core.lstrip("0123456789")[:8]
-    return core[:8] or "TASK"
+    return core[:8] if len(core) >= 2 else "TASK"

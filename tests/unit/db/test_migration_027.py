@@ -16,6 +16,7 @@ Uses ``tmp_path`` throughout so the suite runs on Windows and POSIX alike.
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -26,6 +27,8 @@ from octop.infra.db import migrate
 from octop.infra.db.migrate import _backfill_project_task_numbering, run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.task_prefix import derive_task_prefix
+from octop.infra.utils.ulid import new_short_id
 
 SQLITE_FILE = "027_project_task_numbering.sql"
 PG_FILE = "027_project_task_numbering.pg.sql"
@@ -197,6 +200,60 @@ def test_deleting_a_task_cascades_to_both_child_tables(db: SqlitePool):
     assert _count(db, "project_task_executors") == 0
 
 
+def test_deleting_an_assigned_user_cascades_to_project_task_owners(db: SqlitePool):
+    """Lead FIND-1 / PLAN §B2.3.1: NO ACTION made an assigned user undeletable.
+
+    A second user is used on purpose: ``project_tasks.created_by`` (and
+    ``019_projects.sql`` @60) still declare NO ACTION, so the *creator* is not
+    deletable and that is pre-existing behaviour outside this card's scope.
+    """
+    creator = _seed_project(db)
+    assignee = UserRepo(db).create(username="assignee", password_hash="h", role="user")
+    assert assignee != creator
+
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO project_task_owners(task_id, user_id) VALUES ('task_1', ?)", (assignee,)
+        )
+    assert _count(db, "project_task_owners") == 1
+
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (assignee,))
+
+    with db.connect() as conn:
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM project_task_owners WHERE user_id = ?", (assignee,)
+        ).fetchone()
+    assert int(remaining["n"]) == 0, "the assignment row must cascade away with its user"
+
+
+# ── derive_task_prefix (PLAN §B1.1, lead FIND-2) ─────────────────────────────
+
+FROZEN_PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{1,7}$")
+
+
+def test_derive_task_prefix_falls_back_when_the_id_candidate_is_too_short():
+    """'12345A' -> 'A' would emit 'A-001', which the frozen number shape bans."""
+    assert derive_task_prefix("项目", "12345A") == "TASK"
+    assert derive_task_prefix("项目", "123456") == "TASK"
+
+
+def test_derive_task_prefix_still_derives_the_two_documented_paths():
+    assert derive_task_prefix("Plan Alpha", "3GQQ2K") == "PLANALPH"
+    assert derive_task_prefix("Demo", "prj_1") == "DEMO"
+    # A CJK-only name falls through to the short id, not to the constant.
+    assert derive_task_prefix("定价改版", "3GQQ2K") == "GQQ2K"
+
+
+def test_derive_task_prefix_always_matches_the_frozen_shape():
+    """The property the rule must hold for every id the repo can mint."""
+    cjk_names = ["项目", "定价改版", "任务看板", "纯中文名称", "这是一个很长的纯中文项目名称"]
+    for index in range(10_000):
+        prefix = derive_task_prefix(cjk_names[index % len(cjk_names)], new_short_id())
+        assert FROZEN_PREFIX_RE.match(prefix), prefix
+        assert 2 <= len(prefix) <= 8, prefix
+
+
 # ── the v26 -> v27 backfill ──────────────────────────────────────────────────
 
 
@@ -310,6 +367,11 @@ def test_backfill_helper_exists_and_a_rerun_writes_nothing(tmp_path: Path, monke
     assert "INSERT INTO audit_log" not in migrate_src, (
         "an idempotent rebuild is not an exception report (§B2.3.2)"
     )
+    # FIND-5: the counts must be visible outside the helper, on both call sites.
+    assert migrate_src.count('logger.info("v27 backfill: %s", counts)') == 2
+    assert "logger = logging.getLogger(__name__)" in migrate_src
+    # FIND-3: the empty-counter precondition is documented, with the repair path.
+    assert "GREATEST(last_seq, ?)" in migrate_src
 
     pool = SqlitePool(tmp_path / "octop.db")
     real_discover = migrate._discover
@@ -331,6 +393,53 @@ def test_backfill_helper_exists_and_a_rerun_writes_nothing(tmp_path: Path, monke
     assert _number_tasks(pool) == {"task_1": "DEMO-001", "task_a": "DEMO-002"}
     assert _count(pool, "project_task_owners") == 1
     assert _count(pool, "project_task_counters") == 1
+
+
+DIRTY_USER_IDS = ("7_0", " 7 ", "٧", "", "abc", "+7", "7.0")
+
+
+def test_backfill_rejects_ids_that_are_not_ascii_decimal(tmp_path: Path, monkeypatch, caplog):
+    """Lead FIND-4: a bare ``int()`` remaps dirty ids onto *other* users.
+
+    ``int('7_0') == 70``, ``int(' 7 ') == 7`` and ``int('٧') == 7``, so the ids
+    below would silently become assignments to users 7 / 70 -- which do exist
+    in this fixture. Only the ASCII decimal ``"0{uid}"`` may map.
+    """
+    pool = SqlitePool(tmp_path / "octop.db")
+    real_discover = migrate._discover
+    monkeypatch.setattr(
+        migrate,
+        "_discover",
+        lambda dialect="sqlite": [item for item in real_discover(dialect) if item[0] <= 24],
+    )
+    run_migrations(pool)
+
+    uid = _seed_project(pool)
+    for index in range(2, 71):  # users 7 and 70 must exist for the remap to bite
+        UserRepo(pool).create(username=f"u{index}", password_hash="h", role="user")
+    for index, raw in enumerate(DIRTY_USER_IDS):
+        _insert_task(pool, f"task_dirty_{index}", uid, sort_order=index, assignee=("user", raw))
+    _insert_task(pool, "task_zero", uid, sort_order=99, assignee=("user", f"0{uid}"))
+
+    caplog.set_level(logging.INFO, logger="octop.infra.db.migrate")
+    monkeypatch.undo()
+    run_migrations(pool)
+
+    with pool.connect() as conn:
+        owners = [
+            (str(row["task_id"]), int(row["user_id"]))
+            for row in conn.execute(
+                "SELECT task_id, user_id FROM project_task_owners ORDER BY task_id"
+            ).fetchall()
+        ]
+    assert owners == [("task_zero", uid)], "dirty ids must map to nobody (PLAN §B2.3.2)"
+
+    # FIND-5: the skip count reaches the log, so the evidence is visible.
+    lines = [
+        record.getMessage() for record in caplog.records if "v27 backfill:" in record.getMessage()
+    ]
+    assert len(lines) == 1, lines
+    assert f"'invalid_skipped': {len(DIRTY_USER_IDS)}" in lines[0], lines[0]
 
 
 # ── the migration pair itself ────────────────────────────────────────────────
@@ -364,6 +473,9 @@ def test_the_pair_is_self_contained_on_both_dialects():
         assert "ADD COLUMN owner_user_id" not in text
         assert "ADD COLUMN executor" not in text
         assert "UPDATE _schema_version SET version = 27;" in text
+        # FIND-1: an assigned user must stay deletable (NO ACTION would block it).
+        assert "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE," in text
+        assert "user_id INTEGER NOT NULL REFERENCES users(id)," not in text
 
     for statement in pg_sql.split(";\n"):
         body = "\n".join(

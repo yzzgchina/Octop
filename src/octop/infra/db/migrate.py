@@ -7,6 +7,7 @@ Each file is ``NNN_description.sql`` (SQLite) or ``NNN_description.pg.sql``
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -15,6 +16,8 @@ from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.utils.ulid import new_ulid
+
+logger = logging.getLogger(__name__)
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SQL_STMT_RE = re.compile(r";\s*\n")
@@ -1653,6 +1656,16 @@ def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
     a second pass writes nothing (PLAN §B1.5 / §B2.3.2).
 
     Returns the rows written per step -- all zero when nothing was left to do.
+
+    ★ Counter seeding (``counters``) is ``INSERT OR IGNORE`` / ``ON CONFLICT DO
+    NOTHING``, so an *existing* ``project_task_counters`` row is never raised to
+    the freshly computed ``last_seq``. That is sound only for this helper's one
+    call site: the 24 -> 27 step, where the table was just created by the 027
+    pair and is therefore empty. If this helper is ever wired into the repair
+    chain or run by hand against a non-empty counter table, the seeding must
+    become a three-way maximum merge instead -- SQLite ``MAX(last_seq, ?)`` /
+    PostgreSQL ``GREATEST(last_seq, ?)`` -- otherwise a lower computed value is
+    silently dropped.
     """
     counts = {
         "task_prefix": 0,
@@ -1661,6 +1674,7 @@ def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
         "owners": 0,
         "executors": 0,
         "owners_skipped": 0,
+        "invalid_skipped": 0,
     }
     if not _table_exists(db, "projects") or not _table_exists(db, "project_tasks"):
         return counts
@@ -1745,8 +1759,13 @@ def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
             counts["counters"] += conn.execute(seed_counter, (project_id, last_seq)).rowcount
 
         # Existing single subject -> the two child tables (PLAN §B2.3.2). The
-        # ``int()`` parse is the cross-dialect form of "CAST to integer":
+        # ASCII-decimal gate is the cross-dialect form of "CAST to integer":
         # SQLite would silently cast '7.0'/'abc' to 0 while PostgreSQL errors.
+        # A bare ``int()`` would be *wider* than PG's cast -- it accepts
+        # underscores ('7_0' -> 70), surrounding whitespace (' 7 ' -> 7) and
+        # non-ASCII digits ('٧' -> 7) -- i.e. it would silently remap a dirty id
+        # onto a DIFFERENT existing user. ``isascii() and isdigit()`` accepts
+        # exactly ASCII decimal ('07' included) and rejects the rest.
         # Tasks that already carry a mapping are skipped, so a re-run reads and
         # writes nothing at all (the "0 rows" idempotency judgement).
         valid_users = {int(row["id"]) for row in conn.execute("SELECT id FROM users").fetchall()}
@@ -1759,10 +1778,11 @@ def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
             assignee_type = str(row["assignee_type"])
             assignee_id = str(row["assignee_id"])
             if assignee_type == "user":
-                try:
-                    user_id = int(assignee_id)
-                except ValueError:
+                if not (assignee_id.isascii() and assignee_id.isdigit()):
+                    # Not an ASCII decimal: neither side gets a row (§B2.3.2).
+                    counts["invalid_skipped"] += 1
                     continue
+                user_id = int(assignee_id)
                 if user_id not in valid_users:
                     # ``project_task_owners.user_id`` REFERENCES users(id): a
                     # deleted user's id cannot be represented in the child table.
@@ -2077,7 +2097,8 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         # The numbered pair ran the DDL above; the data backfill needs Python
         # (``derive_task_prefix`` has no cross-dialect SQL form) and is
         # idempotent -- a re-run writes 0 rows (PLAN §B1.5).
-        _backfill_project_task_numbering(db)
+        counts = _backfill_project_task_numbering(db)
+        logger.info("v27 backfill: %s", counts)
 
 
 def run_migrations(db: DatabasePool) -> None:
@@ -2117,7 +2138,8 @@ def run_migrations(db: DatabasePool) -> None:
                 # The numbered pair ran the DDL above; the data backfill needs
                 # Python (``derive_task_prefix`` has no cross-dialect SQL form)
                 # and is idempotent -- a re-run writes 0 rows (PLAN §B1.5).
-                _backfill_project_task_numbering(db)
+                counts = _backfill_project_task_numbering(db)
+                logger.info("v27 backfill: %s", counts)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
