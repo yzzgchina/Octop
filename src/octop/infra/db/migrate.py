@@ -1587,6 +1587,144 @@ def _ensure_projects_schema(db: DatabasePool) -> None:
         conn.executescript(text)
 
 
+def _task_number(prefix: str, seq: int) -> str:
+    """``f"{prefix}-{seq:03d}"`` up to 999, four digits from 1000 (PLAN §B1.2)."""
+    return f"{prefix}-{seq:03d}" if seq <= 999 else f"{prefix}-{seq:04d}"
+
+
+def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
+    """Backfill the v27 task-numbering data, idempotently.
+
+    The ``027_project_task_numbering`` pair owns the DDL; this helper owns the
+    data half, which has no cross-dialect SQL form (``derive_task_prefix`` drops
+    non-ASCII characters and SQLite has no regex). It runs in one transaction
+    (PLAN §B1.5), and every ``WHERE`` clause here matches 0 rows on a re-run, so
+    a second pass writes nothing (PLAN §B1.5 / §B2.3.2).
+
+    Returns the rows written per step -- all zero when nothing was left to do.
+    """
+    counts = {
+        "task_prefix": 0,
+        "task_number": 0,
+        "counters": 0,
+        "owners": 0,
+        "executors": 0,
+        "owners_skipped": 0,
+    }
+    if not _table_exists(db, "projects") or not _table_exists(db, "project_tasks"):
+        return counts
+    if "task_prefix" not in _table_columns(db, "projects"):
+        # The 027 pair has not run: a database whose recorded watermark skipped
+        # it. Nothing to backfill, and the columns do not exist to write.
+        return counts
+
+    from octop.infra.db.task_prefix import derive_task_prefix  # noqa: PLC0415
+
+    if db.dialect == "postgresql":
+        seed_counter = (
+            "INSERT INTO project_task_counters(project_id, last_seq) VALUES (?, ?)"
+            " ON CONFLICT(project_id) DO NOTHING"
+        )
+        insert_owner = (
+            "INSERT INTO project_task_owners(task_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
+        )
+        insert_executor = (
+            "INSERT INTO project_task_executors(task_id, subject_type, subject_id)"
+            " VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
+        )
+    else:
+        seed_counter = (
+            "INSERT OR IGNORE INTO project_task_counters(project_id, last_seq) VALUES (?, ?)"
+        )
+        insert_owner = "INSERT OR IGNORE INTO project_task_owners(task_id, user_id) VALUES (?, ?)"
+        insert_executor = (
+            "INSERT OR IGNORE INTO project_task_executors"
+            "(task_id, subject_type, subject_id) VALUES (?, ?, ?)"
+        )
+
+    # One transaction for the whole backfill (PLAN §B1.5). Nothing here reports
+    # to ``audit_log``: this is an idempotent rebuild, not an exception report.
+    with db.transaction() as conn:
+        for row in conn.execute(
+            "SELECT project_id, name FROM projects WHERE task_prefix = ''"
+        ).fetchall():
+            conn.execute(
+                "UPDATE projects SET task_prefix = ? WHERE project_id = ?",
+                (
+                    derive_task_prefix(str(row["name"] or ""), str(row["project_id"])),
+                    row["project_id"],
+                ),
+            )
+            counts["task_prefix"] += 1
+
+        project_ids = [
+            str(row["project_id"])
+            for row in conn.execute(
+                "SELECT DISTINCT project_id FROM project_tasks WHERE task_number IS NULL"
+            ).fetchall()
+        ]
+        for project_id in project_ids:
+            counter = conn.execute(
+                "SELECT last_seq FROM project_task_counters WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            last_seq = int(counter["last_seq"]) if counter is not None else 0
+            prefix = str(
+                conn.execute(
+                    "SELECT task_prefix FROM projects WHERE project_id = ?", (project_id,)
+                ).fetchone()["task_prefix"]
+            )
+            # ``repos/project_tasks.py`` lists with the same key order.
+            task_ids = [
+                str(row["task_id"])
+                for row in conn.execute(
+                    "SELECT task_id FROM project_tasks"
+                    " WHERE project_id = ? AND task_number IS NULL"
+                    " ORDER BY sort_order, created_at, id",
+                    (project_id,),
+                ).fetchall()
+            ]
+            for task_id in task_ids:
+                last_seq += 1
+                conn.execute(
+                    "UPDATE project_tasks SET task_number = ? WHERE task_id = ?",
+                    (_task_number(prefix, last_seq), task_id),
+                )
+                counts["task_number"] += 1
+            counts["counters"] += conn.execute(seed_counter, (project_id, last_seq)).rowcount
+
+        # Existing single subject -> the two child tables (PLAN §B2.3.2). The
+        # ``int()`` parse is the cross-dialect form of "CAST to integer":
+        # SQLite would silently cast '7.0'/'abc' to 0 while PostgreSQL errors.
+        # Tasks that already carry a mapping are skipped, so a re-run reads and
+        # writes nothing at all (the "0 rows" idempotency judgement).
+        valid_users = {int(row["id"]) for row in conn.execute("SELECT id FROM users").fetchall()}
+        for row in conn.execute(
+            "SELECT t.task_id, t.assignee_type, t.assignee_id FROM project_tasks t"
+            " WHERE t.assignee_type IS NOT NULL AND t.assignee_id IS NOT NULL"
+            " AND NOT EXISTS (SELECT 1 FROM project_task_owners o WHERE o.task_id = t.task_id)"
+            " AND NOT EXISTS (SELECT 1 FROM project_task_executors e WHERE e.task_id = t.task_id)"
+        ).fetchall():
+            assignee_type = str(row["assignee_type"])
+            assignee_id = str(row["assignee_id"])
+            if assignee_type == "user":
+                try:
+                    user_id = int(assignee_id)
+                except ValueError:
+                    continue
+                if user_id not in valid_users:
+                    # ``project_task_owners.user_id`` REFERENCES users(id): a
+                    # deleted user's id cannot be represented in the child table.
+                    counts["owners_skipped"] += 1
+                    continue
+                counts["owners"] += conn.execute(insert_owner, (row["task_id"], user_id)).rowcount
+            elif assignee_type in ("agent", "team") and assignee_id:
+                counts["executors"] += conn.execute(
+                    insert_executor, (row["task_id"], assignee_type, assignee_id)
+                ).rowcount
+    return counts
+
+
 def _repair_legacy_schema(db: DatabasePool) -> None:
     """Idempotent compatibility repairs for local databases from old builds."""
     if _table_exists(db, "users"):
@@ -1884,6 +2022,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
+    if version == 27:
+        # The numbered pair ran the DDL above; the data backfill needs Python
+        # (``derive_task_prefix`` has no cross-dialect SQL form) and is
+        # idempotent -- a re-run writes 0 rows (PLAN §B1.5).
+        _backfill_project_task_numbering(db)
 
 
 def run_migrations(db: DatabasePool) -> None:
@@ -1919,6 +2062,11 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_published_experts_schema(db)
             if version == 10:
                 _ensure_knowledge_bases_schema(db)
+            if version == 27:
+                # The numbered pair ran the DDL above; the data backfill needs
+                # Python (``derive_task_prefix`` has no cross-dialect SQL form)
+                # and is idempotent -- a re-run writes 0 rows (PLAN §B1.5).
+                _backfill_project_task_numbering(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
