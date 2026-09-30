@@ -235,6 +235,39 @@ def test_create_rejects_a_kb_name_clash_without_writing_anything(
     assert services.knowledge_repo.count_bases_for_owner(owner.id) == 1
 
 
+def test_a_kb_name_race_gives_the_same_409_as_the_sequential_precheck(
+    service: ProjectService,
+    services: SimpleNamespace,
+    owner: Actor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**并发**同名的窗口 ⇒ 仍是 409 ``KNOWLEDGE_NAME_TAKEN``，不是 500。
+
+    ``_assert_kb_preconditions``（⓪）只是一次**读**：两个同 owner 同名的请求都可能在对方
+    建出 KB 之前通过它，于是真正的仲裁者落到步骤 ③ 的 ``UNIQUE(owner_user_id, name)``。
+    顺序路径由 ⓪ 给出 409（上面那条）；并发路径**必须给同一个码** —— 这是同一个谓词
+    （「你已经有一个同名的知识库」），把它包成 500 ``PROJECT_KB_BIND_FAILED`` 会让唯一
+    可行动的原因（改个名字/重试）消失。
+
+    这里把 ⓪ 打成 no-op 来**确定性**地制造「预检通过、插入才撞」的窗口，不靠真并发。
+    """
+    winner = make_project(service, owner, name="Alpha")
+    # 正向对照：赢家的 KB 真的建出来了 —— 否则下面撞的就不是名字。
+    assert winner.kb_id is not None
+    before_projects = [p.id for p in services.project_repo.list_by_owner(owner.id)]
+    before_kbs = services.knowledge_repo.count_bases_for_owner(owner.id)
+    monkeypatch.setattr(service, "_assert_kb_preconditions", lambda *_a, **_k: None)
+
+    with pytest.raises(OctopError) as err:
+        make_project(service, owner, name="Alpha")
+
+    assert err.value.code is ErrorCode.KNOWLEDGE_NAME_TAKEN
+    assert err.value.status == 409
+    # 状态仍原子：没有多出 project，也没有多出 KB。
+    assert [p.id for p in services.project_repo.list_by_owner(owner.id)] == before_projects
+    assert services.knowledge_repo.count_bases_for_owner(owner.id) == before_kbs
+
+
 def test_kb_limit_constant_is_the_one_the_service_uses() -> None:
     assert MAX_BASES_PER_OWNER == 20
 

@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from sqlite3 import IntegrityError as SqliteIntegrityError
 from typing import TYPE_CHECKING, Any, Protocol
+
+from psycopg import IntegrityError as PsycopgIntegrityError
 
 # G6's single implementation (T-10). Imported from the domain, not re-implemented here:
 # both task write entries must validate the **same** board with the **same** rule.
@@ -390,13 +393,35 @@ class ProjectService:
                 role="owner",
             )
             if bind_kb:
-                kb_id = str(  # ③
-                    self._knowledge.create_base(owner_user_id=owner_user.id, name=name).id
-                )
+                try:
+                    kb_id = str(  # ③
+                        self._knowledge.create_base(owner_user_id=owner_user.id, name=name).id
+                    )
+                except (SqliteIntegrityError, PsycopgIntegrityError) as err:
+                    # ★ Concurrent same-name create. The ⓪ pre-check is only a **read**,
+                    # so two requests can both pass it; ``UNIQUE(owner_user_id, name)`` on
+                    # ``knowledge_bases`` is the real arbiter. Report the loss exactly as
+                    # the sequential path does -- same code, same message, same details --
+                    # instead of letting the generic wrap below turn a user-visible
+                    # conflict into a 500 ``PROJECT_KB_BIND_FAILED``. ``kb_id`` stays
+                    # ``None``, so the compensating delete removes only our own project
+                    # and never the winner's KB.
+                    raise OctopError(
+                        ErrorCode.KNOWLEDGE_NAME_TAKEN,
+                        "You already have a knowledge base with this name.",
+                        details={"name": name},
+                    ) from err
                 self._projects.set_kb_id(project.id, kb_id)  # ④
         except Exception as exc:
             self._compensate_create(project=project, kb_id=kb_id)
-            if isinstance(exc, OctopError) and exc.code is ErrorCode.PROJECT_KB_BIND_FAILED:
+            # Two codes already say what happened and must keep their status:
+            # ``PROJECT_KB_BIND_FAILED`` is the honest answer for a real ③/④ failure,
+            # and ``KNOWLEDGE_NAME_TAKEN`` (409) for the concurrent name collision above
+            # -- re-wrapping it here would report the same event as a 500 instead.
+            if isinstance(exc, OctopError) and exc.code in (
+                ErrorCode.PROJECT_KB_BIND_FAILED,
+                ErrorCode.KNOWLEDGE_NAME_TAKEN,
+            ):
                 raise
             raise OctopError(
                 ErrorCode.PROJECT_KB_BIND_FAILED,

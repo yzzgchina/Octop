@@ -389,3 +389,138 @@ async def test_a_successful_create_binds_a_knowledge_base(
     )
     assert after["projects"] == before["projects"] + 1
     assert after["team_runs"] == before["team_runs"] + 1
+
+
+# ── 批次⑨ E2：同 goal 的 KB 名字冲突（409，不是 500）────────────────────────
+# run 的 project 名 = goal[:80]，而 ``create_project`` 用同一个名字建 KB：两个同 goal 的
+# create 会争同一个 ``UNIQUE(owner_user_id, name)``。顺序路径由 ⓪ 前置检查给出 409
+# ``KNOWLEDGE_NAME_TAKEN``；**并发**路径两个请求都可能先通过那次**读**，真正的仲裁者是
+# 步骤 ③ 的插入 —— 它必须给出**同一个码**，而不是 500 ``PROJECT_KB_BIND_FAILED``。
+
+_KB_PRE = "octop.infra.projects.service.ProjectService._assert_kb_preconditions"
+
+
+def _pin_run_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 run_id 固定成**递增**序列。
+
+    秒级精度下同秒的第二次 create 会先撞 409 ``TEAM_RUN_CONFLICT``，把本组用例要看的那
+    条路径（KB 名字冲突）整个挡掉；递增 id 让每条路径各有专属断言。
+    """
+    state = {"n": 0}
+
+    def _next_id(*_args: Any, **_kwargs: Any) -> str:
+        state["n"] += 1
+        return f"2026-01-02-{state['n']:06d}"
+
+    monkeypatch.setattr(RUN_ID_FOR, _next_id)
+
+
+async def test_a_lost_kb_name_race_leaves_no_new_rows(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并发同 goal 的**输家** ⇒ **409 ``KNOWLEDGE_NAME_TAKEN``**（不是 500）+ 五表不变。
+
+    确定性构造（不靠真并发，也不靠 sleep）：赢家先正常建出 run（连带 project + KB）；
+    随后把 ⓪ 的 ``_assert_kb_preconditions`` 遮成 no-op —— 这正是真实竞态里「两个请求都
+    在对方建出 KB 之前通过了预检」的那一刻 —— 输家于是只在步骤 ③ 的 UNIQUE 上撞。
+    修复要求：同一个码、同一个可行动原因（409），而不是把用户可见的冲突包成
+    ``PROJECT_KB_BIND_FAILED``（500）。
+
+    ★ run_id 固定成递增：否则第二次 create 会先撞 ``TEAM_RUN_CONFLICT``，这条路径根本走不到。
+    """
+    client, srv, auth, team_id, members = await _stopped_team(env, name="kb-name-race")
+    _seed_manifest(srv, team_id, _normal_manifest(team_id, members))
+    _enable_kb(monkeypatch)
+    _pin_run_ids(monkeypatch)
+    goal = "同名 goal 的并发窗口"
+
+    winner = await _create(client, auth, team_id, goal)
+    assert winner.status_code == 201, winner.text
+    winner_id = str(winner.json()["run_id"])
+    winner_members = len(srv.services.team_run_repo.list_members(winner_id))
+    assert winner_members == 2
+    winner_kb = srv.services.project_repo.get(str(winner.json()["project_id"])).kb_id
+    assert winner_kb is not None, "正向对照：赢家真的建出了 KB，输家撞的就是它的名字"
+    before = _table_counts_with_kb(srv)
+
+    monkeypatch.setattr(_KB_PRE, lambda *_args, **_kwargs: None)
+    loser = await _create(client, auth, team_id, goal)
+
+    assert loser.status_code == 409, loser.text
+    assert loser.json()["error"]["code"] == "KNOWLEDGE_NAME_TAKEN"
+    assert loser.json()["error"]["details"]["name"] == goal
+    assert _table_counts_with_kb(srv) == before, "输家不得留下 project / run / thread / member / KB"
+    # 赢家一行不少：run、members、KB 都还在（stage-aware 补偿不碰别人的行）。
+    assert srv.services.team_run_repo.get(winner_id) is not None
+    assert len(srv.services.team_run_repo.list_members(winner_id)) == winner_members
+    assert srv.services.knowledge_repo.get_base(winner_kb) is not None
+
+
+async def test_a_sequential_kb_name_clash_is_a_409(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """反向对照①：**顺序**同 goal（⓪ 前置检查还在）⇒ 同样 409，五表不变。
+
+    与上一条并列看：顺序走 ⓪、并发走步骤 ③，两条路径必须给**同一个**码。
+    """
+    client, srv, auth, team_id, members = await _stopped_team(env, name="kb-name-seq")
+    _seed_manifest(srv, team_id, _normal_manifest(team_id, members))
+    _enable_kb(monkeypatch)
+    _pin_run_ids(monkeypatch)
+    goal = "顺序同名 goal"
+
+    first = await _create(client, auth, team_id, goal)
+    assert first.status_code == 201, first.text
+    before = _table_counts_with_kb(srv)
+
+    second = await _create(client, auth, team_id, goal)
+
+    assert second.status_code == 409, second.text
+    assert second.json()["error"]["code"] == "KNOWLEDGE_NAME_TAKEN"
+    assert _table_counts_with_kb(srv) == before
+
+
+async def test_two_different_goals_both_create(env: _Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """反向对照②：**不同** goal ⇒ 两次都 201，各自的 KB 与成员行都在（不误伤）。"""
+    client, srv, auth, team_id, members = await _stopped_team(env, name="kb-name-diff")
+    _seed_manifest(srv, team_id, _normal_manifest(team_id, members))
+    _enable_kb(monkeypatch)
+    _pin_run_ids(monkeypatch)
+    before = _table_counts_with_kb(srv)
+
+    first = await _create(client, auth, team_id, "goal-A")
+    second = await _create(client, auth, team_id, "goal-B")
+
+    assert (first.status_code, second.status_code) == (201, 201), (first.text, second.text)
+    for response in (first, second):
+        run_id = str(response.json()["run_id"])
+        assert len(srv.services.team_run_repo.list_members(run_id)) == 2
+        assert srv.services.project_repo.get(str(response.json()["project_id"])).kb_id
+    after = _table_counts_with_kb(srv)
+    assert after["knowledge_bases"] == before["knowledge_bases"] + 2
+    assert after["team_runs"] == before["team_runs"] + 2
+
+
+async def test_with_the_kb_feature_off_two_same_goal_creates_both_succeed(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """反向对照③：KB 关（fresh install）⇒ 没有名字冲突这回事，同 goal 两次都 201。
+
+    断言 KB 计数**不动**（确认门真的关着，否则这只是「KB 开了但没撞」的另一种假象）。
+    """
+    client, srv, auth, team_id, members = await _stopped_team(env, name="kb-off-same-goal")
+    _seed_manifest(srv, team_id, _normal_manifest(team_id, members))
+    monkeypatch.setattr(
+        "octop.infra.projects.service.get_capability", lambda *args, **kwargs: {"usable": False}
+    )
+    _pin_run_ids(monkeypatch)
+    goal = "KB 关掉时的同 goal"
+    before = _table_counts_with_kb(srv)
+
+    first = await _create(client, auth, team_id, goal)
+    second = await _create(client, auth, team_id, goal)
+
+    assert (first.status_code, second.status_code) == (201, 201), (first.text, second.text)
+    after = _table_counts_with_kb(srv)
+    assert after["knowledge_bases"] == before["knowledge_bases"], "KB 关着就不该建 KB"
+    assert after["team_runs"] == before["team_runs"] + 2
