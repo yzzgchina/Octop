@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { Button, Form, Input, Modal, Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Pencil, Plus, Trash2 } from "lucide-react";
@@ -9,6 +9,7 @@ import type { ProjectTagDefinition } from "../../../api/modules/projects";
 import { EmptyState } from "../../../components/EmptyState";
 import { useAsyncResource } from "../../../hooks/useAsyncResource";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
+import { PALETTE_SWATCH, VALID_PALETTES } from "../../../styles/themePalettes";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { message } from "../../../utils/antdMessage";
 import { showConfirmModal } from "../../../utils/confirmModal";
@@ -24,6 +25,25 @@ import styles from "./CustomFieldsPanel.module.less";
 /** ``color`` is ``''`` or ``#RRGGBB`` — mirrors PLAN §4 for early feedback. */
 const TAG_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const TAG_MAX_NAME_LENGTH = 32;
+
+/**
+ * Preset swatches (PLAN §A6.1) — the row sits inside the panel's existing form
+ * body, so the styling stays local instead of pulling in a second ``.less``.
+ */
+const PALETTE_ROW_STYLE: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8,
+  marginBottom: 8,
+};
+
+const SWATCH_STYLE: CSSProperties = {
+  width: 22,
+  height: 22,
+  padding: 0,
+  borderRadius: "var(--fn-radius-full)",
+  border: "1px solid var(--fn-border-primary)",
+};
 
 interface TagFormValues {
   name: string;
@@ -57,6 +77,15 @@ export function TagsManager({ projectId, canEdit }: TagsManagerProps) {
       errorFallback: t("projects.loadFailed"),
       logLabel: "project-tags",
     },
+  );
+
+  // SPEC B-04: a colour another tag in this project already uses stays
+  // unpickable; the tag being edited does not occupy its own colour.
+  const takenColors = new Set(
+    tags
+      .filter((tag) => tag.tag_id !== editing?.tag_id)
+      .map((tag) => tag.color.trim().toLowerCase())
+      .filter(Boolean),
   );
 
   // See CustomFieldsPanel: seed the store per open instead of ``initialValues``.
@@ -233,9 +262,12 @@ export function TagsManager({ projectId, canEdit }: TagsManagerProps) {
               {
                 required: true,
                 whitespace: true,
-                message: t("projects.tagInvalid"),
+                message: t("projects.tagNameInvalid"),
               },
-              { max: TAG_MAX_NAME_LENGTH, message: t("projects.tagInvalid") },
+              {
+                max: TAG_MAX_NAME_LENGTH,
+                message: t("projects.tagNameInvalid"),
+              },
             ]}
           >
             <Input className={styles.field} maxLength={TAG_MAX_NAME_LENGTH} />
@@ -248,7 +280,7 @@ export function TagsManager({ projectId, canEdit }: TagsManagerProps) {
                 validator: async (_rule, value: string | undefined) => {
                   const color = (value ?? "").trim();
                   if (color && !TAG_COLOR_PATTERN.test(color)) {
-                    throw new Error(t("projects.tagInvalid"));
+                    throw new Error(t("projects.tagColorInvalid"));
                   }
                 },
               },
@@ -259,9 +291,51 @@ export function TagsManager({ projectId, canEdit }: TagsManagerProps) {
           <Form.Item noStyle shouldUpdate>
             {({ getFieldValue }) => {
               const color = String(getFieldValue("color") ?? "").trim();
-              return TAG_COLOR_PATTERN.test(color) ? (
-                <Tag color={color}>{color.toLowerCase()}</Tag>
-              ) : null;
+              const current = color.toLowerCase();
+              return (
+                <>
+                  {/* PLAN §A6.1 — the swatches are the shared ``PALETTE_SWATCH``
+                      single source and always land as a lowercase hex. */}
+                  <div style={PALETTE_ROW_STYLE}>
+                    {VALID_PALETTES.map((key) => {
+                      const hex = PALETTE_SWATCH[key].toLowerCase();
+                      const active = current === hex;
+                      const taken = !active && takenColors.has(hex);
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          aria-label={hex}
+                          aria-pressed={active}
+                          aria-disabled={taken || undefined}
+                          disabled={taken}
+                          title={hex}
+                          style={{
+                            ...SWATCH_STYLE,
+                            backgroundColor: hex,
+                            opacity: taken ? 0.35 : 1,
+                            cursor: taken ? "not-allowed" : "pointer",
+                            outline: active
+                              ? "2px solid var(--fn-color-brand)"
+                              : "none",
+                            outlineOffset: 1,
+                          }}
+                          onClick={() => {
+                            form.setFieldValue("color", hex);
+                            // Drop a stale hand-typed error on the colour field.
+                            void form
+                              .validateFields(["color"])
+                              .catch(() => undefined);
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                  {TAG_COLOR_PATTERN.test(color) ? (
+                    <Tag color={color}>{current}</Tag>
+                  ) : null}
+                </>
+              );
             }}
           </Form.Item>
         </Form>

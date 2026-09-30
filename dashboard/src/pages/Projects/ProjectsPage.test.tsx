@@ -610,23 +610,51 @@ describe("G2 概览入右栏 + 两个新组件接线（PLAN §2 / §4.1）", () 
     ).toBeTruthy();
   });
 
-  it("⑤ ?tab=tasks&task=<id> → 详情面板替换任务列表；未命中 → taskDetailNotFound", async () => {
+  it("★ ?tab=tasks&task=<id> → 详情占右栏槽位；列表不再被替换；右栏让位", async () => {
     routes["GET /projects/p1/tasks"] = () => [DETAIL_TASK];
     renderG2("/projects/p1?tab=tasks&task=tsk_1");
 
-    expect(await screen.findByTestId("task-detail-panel")).toBeInTheDocument();
-    // 列表被替换（不是叠加）。
-    expect(screen.queryByTestId("project-task-list")).toBeNull();
+    const panel = await screen.findByTestId("task-detail-panel");
+    // 形态 C（PLAN §A5.4）：列表**不再**被替换（旧口径断言的正是「被替换」）。
+    expect(await screen.findByTestId("project-task-list")).toBeInTheDocument();
+    // 槽位 = detailLayout 的第 2 轨（与主区同一父容器），且打开态属性已置。
+    const slotParent = panel.parentElement;
+    expect(slotParent).toBe(
+      screen.getByTestId("project-main-column").parentElement,
+    );
+    expect(slotParent).toHaveAttribute("data-detail-open", "true");
+    // 详情不落在主区内；右栏让位 = 不挂载（非 display:none 伪装）。
+    expect(screen.getByTestId("project-main-column")).not.toContainElement(
+      panel,
+    );
+    expect(screen.queryByTestId("project-right-rail")).toBeNull();
   });
 
-  it("⑤ 缺 tab 参数：?task=<id> 也进详情，且 tasks Tab 高亮", async () => {
+  it("★ 缺 tab 参数：?task=<id> 仍进详情，Tab 回落 plan（不再强制 tasks 高亮）", async () => {
     routes["GET /projects/p1/tasks"] = () => [DETAIL_TASK];
     renderG2("/projects/p1?task=tsk_1");
 
     expect(await screen.findByTestId("task-detail-panel")).toBeInTheDocument();
     expect(
-      screen.getByRole("tab", { name: "projects.tabTasks" }),
+      screen.getByRole("tab", { name: "projects.tabPlan" }),
     ).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByTestId("project-right-rail")).toBeNull();
+  });
+
+  it("★ 判别性对照：?task= 存在 ⇒ 右栏不挂载；清掉 task ⇒ 右栏回到槽位", async () => {
+    routes["GET /projects/p1/tasks"] = () => [DETAIL_TASK];
+    renderG2("/projects/p1?task=tsk_1");
+
+    // 打开态：详情在槽位内、右栏不存在。
+    expect(await screen.findByTestId("task-detail-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-right-rail")).toBeNull();
+
+    // 关闭（←/✕ 走同一条 closeTask）⇒ 右栏重新挂载、详情卸载。
+    fireEvent.click(screen.getByTestId("task-detail-back"));
+    expect(await screen.findByTestId("project-right-rail")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByTestId("task-detail-panel")).toBeNull(),
+    );
   });
 
   it("⑤ 未命中的 task → 优雅降级（不白屏），返回后回到列表", async () => {

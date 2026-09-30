@@ -88,6 +88,12 @@ interface BoardProps {
   onChanged: () => void | Promise<void>;
   /** Optional: open the task detail. When absent the board navigates itself (§5.1). */
   onOpenTask?: (taskId: string) => void;
+  /**
+   * Task id whose detail is currently open (the URL's `?task=`, resolved once in
+   * `index.tsx`). Selection is a pure prop read here — reading the URL in the
+   * board would be a second implementation of the same rule (PLAN §A4.3 / AC-12).
+   */
+  selectedTaskId?: string;
 }
 
 /** Unix seconds in, server-timezone text out (PLAN §0 invariant 3). */
@@ -229,6 +235,7 @@ function Board({
   canEdit,
   onChanged,
   onOpenTask,
+  selectedTaskId,
 }: BoardProps) {
   const { t } = useTranslation();
   const timeZone = useServerTimezone();
@@ -537,6 +544,10 @@ function Board({
   const renderCard = (task: ProjectTask) => {
     const pending = pendingTaskId === task.task_id;
     const dragging = dragTaskId === task.task_id;
+    // PLAN §A4.3 / AC-12: the board's **only** selection test. The empty-string
+    // guard keeps "no detail open" (`index.tsx` passes `?? ""`) from ever matching
+    // a card; the URL itself is never read here (that would be a second source).
+    const isSelected = selectedTaskId !== "" && selectedTaskId === task.task_id;
     // Old caches may predate the never-null guarantee (B-20).
     const tags = task.tags ?? [];
     const { shown: shownTags, more: moreTags } = tagsPreview(tags);
@@ -579,6 +590,7 @@ function Board({
       styles.card,
       dragging ? styles.cardDragging : "",
       pending ? styles.cardPending : "",
+      isSelected ? styles.cardSelected : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -597,6 +609,8 @@ function Board({
         key={task.task_id}
         className={cardClass}
         role="group"
+        data-testid="task-card"
+        data-selected={isSelected ? "true" : "false"}
         draggable={canEdit && !pending}
         onDragStart={(event) => handleCardDragStart(event, task)}
         onDragEnd={endDrag}

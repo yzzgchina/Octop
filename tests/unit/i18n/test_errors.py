@@ -239,8 +239,10 @@ def test_dashboard_projects_namespace_is_paired_and_localized():
     en = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
     zh = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
     assert set(en["projects"]) == set(zh["projects"])
-    # 208+4+22+4+1 = 239, + 6 batch 8 (PLAN §5) = 245, + 2 batch 19 = 247, + 7 batch 12 = 254.
-    assert len(zh["projects"]) == 254
+    # 208+4+22+4+1 = 239, + 6 batch 8 (PLAN §5) = 245, + 2 batch 19 = 247, + 7 batch 12 = 254,
+    # + 1 A6 ``projects.tagNameInvalid`` (PLAN §A6.2) = 255,
+    # + 1 A-TAGS-FIX ``projects.tagColorInvalid`` = 256.
+    assert len(zh["projects"]) == 256
     # R6 copy change: values only, keys untouched.
     assert zh["projects"]["taskStatusReview"] == "审核中"
     assert zh["projects"]["taskStatusBlocked"] == "已阻塞"
@@ -339,7 +341,7 @@ def test_dashboard_projects_new_keys_are_present_in_both_locales():
 # is therefore pinned to its verbatim zh string from PLAN.md §11.1.
 _BATCH2_PROJECTS_ZH: dict[str, str] = {
     "tabDynamic": "动态",
-    "tabPlan": "计划",
+    "tabPlan": "看板",
     "tabTasks": "任务",
     "tabAssets": "知识库",
     "dynamicPlaceholder": "动态流即将上线",
@@ -415,8 +417,8 @@ def test_batch2_projects_keys_exist_in_both_locales():
         assert key in zh["projects"], f"zh projects.{key} missing"
         assert key in en["projects"], f"en projects.{key} missing"
         assert en["projects"][key] != "", f"en projects.{key} is empty"
-    assert len(zh["projects"]) == 254
-    assert len(en["projects"]) == 254
+    assert len(zh["projects"]) == 256
+    assert len(en["projects"]) == 256
 
 
 # ── batch 3 (T-I18N3): edit-dialog labels + two rejection codes ──────────────
@@ -566,7 +568,7 @@ def test_batch4_project_keys_are_localized_per_key():
         # L10: the PLAN table's bold / footnote markers are never part of a value.
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 254 and len(en["projects"]) == 254
+    assert len(zh["projects"]) == 256 and len(en["projects"]) == 256
     # The interpolation placeholder must survive transcription verbatim.
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert en["projects"]["quickInputTarget"] == "To {{name}}"
@@ -629,7 +631,7 @@ def test_qi_recipient_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 254 and len(en["projects"]) == 254
+    assert len(zh["projects"]) == 256 and len(en["projects"]) == 256
     # The reused strings must keep their existing wording (no silent redefinition).
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert zh["projects"]["quickInputNoAgent"] == "请先在项目配置中绑定专家。"
@@ -652,7 +654,7 @@ def test_batch6_picker_empty_teams_is_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 254 and len(en["projects"]) == 254
+    assert len(zh["projects"]) == 256 and len(en["projects"]) == 256
     # The reused keys must keep their wording: this batch adds exactly one key.
     assert set(_T_P6_I18N_PROJECT_KEYS) <= set(zh["projects"])
     for reused, expected in (
@@ -690,7 +692,7 @@ def test_batch8_feed_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 254 and len(en["projects"]) == 254
+    assert len(zh["projects"]) == 256 and len(en["projects"]) == 256
     # Keys the feed keeps rendering must survive (reused, never redefined).
     for reused in ("tabDynamic", "dynamicPlaceholder", "taskDetailTimeline"):
         assert reused in zh["projects"], reused

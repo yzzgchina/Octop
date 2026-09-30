@@ -449,7 +449,7 @@ describe("TagsManager", () => {
     );
 
     expect(
-      await within(dialog).findByText("projects.tagInvalid"),
+      await within(dialog).findByText("projects.tagColorInvalid"),
     ).toBeInTheDocument();
     expect(
       mockedRequest.mock.calls.some(

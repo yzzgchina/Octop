@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectMember, ProjectTask } from "../../../api/modules/projects";
 import { formatServerDateTime } from "../../../utils/formatMessageTime";
 import Board from "./Board";
+import styles from "./Board.module.less";
 
 const createTaskMock = vi.fn();
 const updateTaskMock = vi.fn();
@@ -207,6 +208,10 @@ interface RenderBoardOptions {
   canEdit?: boolean;
   /** 传入即走 prop 回调；不传则走 `Board` 内建 URL 导航（`B-14`）。 */
   onOpenTask?: (taskId: string) => void;
+  /** A4 选中态数据通道（PLAN §A4.3）：`?task=` 由 `index.tsx` 解析后传入。 */
+  selectedTaskId?: string;
+  /** 起始 URL（默认 `?tab=plan`）；用于证明 `Board` 不自行读 `?task=`。 */
+  initialEntry?: string;
 }
 
 /**
@@ -219,13 +224,16 @@ function renderBoard(
 ) {
   const onChanged = vi.fn();
   const view = render(
-    <MemoryRouter initialEntries={["/projects/prj_1?tab=plan"]}>
+    <MemoryRouter
+      initialEntries={[options.initialEntry ?? "/projects/prj_1?tab=plan"]}
+    >
       <Board
         projectId="prj_1"
         tasks={tasks}
         canEdit={options.canEdit ?? true}
         onChanged={onChanged}
         onOpenTask={options.onOpenTask}
+        selectedTaskId={options.selectedTaskId}
       />
       <RouterSearchProbe />
     </MemoryRouter>,
@@ -853,6 +861,92 @@ describe("Board 卡片 testid（AC-01a/b/c 正 · AC-01d 显式未满足）", ()
     const reported = emptyShellNodes(root);
     expect(reported.length).toBe(1);
     expect(reported[0]).toBe(probe);
+  });
+});
+
+/**
+ * A4 选中态**数据通道**（`PLAN.md §A4.3` / `SPEC.md · AC-12`）。
+ *
+ * 语义 = 「该卡详情已打开」（`?task=` 命中）。本批只落地**数据侧**：卡片根的
+ * `data-selected` 与 `styles.cardSelected`（视觉 `border-left` 在 `Board.module.less`，
+ * 归 `A-BOARD-CSS`）。★ 唯一判定处在 `Board` 的 `renderCard` 内、**只读 prop**。
+ */
+describe("Board 卡片选中态数据通道（PLAN §A4.3 / AC-12）", () => {
+  beforeEach(() => {
+    resetListMembers();
+  });
+
+  it('命中卡: 卡片根 data-selected="true" + cardSelected 类（同 render 内其余 testid 仍在）', () => {
+    renderBoard([task({ task_id: "tsk_1" })], { selectedTaskId: "tsk_1" });
+
+    const root = cardRootOf("Task one");
+    // 新增的冻结 testid（`SPEC.md · testid 名` 权威行）确实挂在卡片根上。
+    expect(root).toHaveAttribute("data-testid", "task-card");
+    expect(root).toHaveAttribute("data-selected", "true");
+    expect(root.classList.contains(styles.cardSelected)).toBe(true);
+
+    // ★ 同一次 render 的正向对照：卡片其余 testid 仍在（防「整卡不渲染也能绿」）。
+    expect(within(root).getByTestId("task-card-priority")).toBeInTheDocument();
+    expect(within(root).getByTestId("task-card-menu")).toBeInTheDocument();
+  });
+
+  it('两向 · 同一次 render: 命中卡 "true" / 未命中卡 "false" 且未命中卡无该类', () => {
+    renderBoard(
+      [
+        task({ task_id: "tsk_1", title: "Task one" }),
+        task({ task_id: "tsk_2", title: "Task two" }),
+      ],
+      { selectedTaskId: "tsk_2" },
+    );
+
+    // 两张卡都在树上（否则下面的 false / 无类可能是「卡根本没渲染」）。
+    expect(screen.getAllByTestId("task-card")).toHaveLength(2);
+
+    const hit = cardRootOf("Task two");
+    expect(hit).toHaveAttribute("data-selected", "true");
+    expect(hit.classList.contains(styles.cardSelected)).toBe(true);
+
+    const miss = cardRootOf("Task one");
+    expect(miss).toHaveAttribute("data-selected", "false");
+    expect(miss.classList.contains(styles.cardSelected)).toBe(false);
+    expect(within(miss).getByTestId("task-card-priority")).toBeInTheDocument();
+
+    // ★ 判别性对照：临时把选中类加到未命中卡上 ⇒ **同一查询**必须变真
+    //   （证明上面的 false 不是「该类名恒不出现」的恒真断言）。只在用例内构造。
+    miss.classList.add(styles.cardSelected);
+    expect(miss.classList.contains(styles.cardSelected)).toBe(true);
+  });
+
+  it("不传 selectedTaskId（详情未打开）⇒ 所有卡均为 false 且无该类", () => {
+    renderBoard([task({ task_id: "tsk_1" })]);
+
+    const root = cardRootOf("Task one");
+    expect(root).toHaveAttribute("data-selected", "false");
+    expect(root.classList.contains(styles.cardSelected)).toBe(false);
+  });
+
+  it("唯一来源 = prop: URL 里 ?task= 命中该卡但 prop 未命中 ⇒ 仍为 false（Board 不读 URL）", () => {
+    renderBoard([task({ task_id: "tsk_2", title: "Task two" })], {
+      initialEntry: "/projects/prj_1?tab=plan&task=tsk_2",
+    });
+
+    // 路由探针确认 URL 里确实带着 ?task=（MemoryRouter 不写 window.location）。
+    expect(screen.getByTestId("router-search")).toHaveTextContent("task=tsk_2");
+
+    const root = cardRootOf("Task two");
+    expect(root).toHaveAttribute("data-selected", "false");
+    expect(root.classList.contains(styles.cardSelected)).toBe(false);
+  });
+
+  it("只读用户（canEdit=false）同样带选中标记 —— 语义是「详情已打开」，与编辑权限无关", () => {
+    renderBoard([task({ task_id: "tsk_1" })], {
+      canEdit: false,
+      selectedTaskId: "tsk_1",
+    });
+
+    const root = cardRootOf("Task one");
+    expect(root).toHaveAttribute("data-selected", "true");
+    expect(root.classList.contains(styles.cardSelected)).toBe(true);
   });
 });
 

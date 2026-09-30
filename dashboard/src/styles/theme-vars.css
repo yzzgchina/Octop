@@ -41,6 +41,13 @@ html[data-theme="light"] {
   /* Card / inner-panel surface alias; must stay equal to --fn-bg-card. */
   --fn-card-surface: var(--fn-bg-card);
 
+  /* ---- Buttons & key chips (UI.md 2.1; values from prototype proto.css @337-341) ---- */
+  --fn-btn-dark-bg: var(--fn-text-primary); /* #111827 */
+  --fn-btn-dark-bg-hover: #1f2937;
+  --fn-btn-dark-fg: var(--fn-text-inverse); /* #ffffff */
+  --fn-chip-key-bg: var(--fn-color-info); /* #3b82f6 */
+  --fn-chip-key-fg: var(--fn-text-inverse); /* #ffffff */
+
   /* ---- Text ---- */
   --fn-text-primary: #111827;
   --fn-text-secondary: #4b5563;
@@ -204,6 +211,13 @@ html[data-theme="dark"] {
   --fn-bg-card: var(--fn-bg-tertiary);
   /* Card / inner-panel surface alias; must stay equal to --fn-bg-card. */
   --fn-card-surface: var(--fn-bg-card);
+
+  /* ---- Buttons & key chips (UI.md 2.1; values from prototype proto.css @353-357) ---- */
+  --fn-btn-dark-bg: rgba(255, 255, 255, 0.14);
+  --fn-btn-dark-bg-hover: rgba(255, 255, 255, 0.2);
+  --fn-btn-dark-fg: rgba(255, 255, 255, 0.92);
+  --fn-chip-key-bg: rgba(59, 130, 246, 0.18);
+  --fn-chip-key-fg: var(--fn-color-info); /* #60a5fa */
 
   /* ---- Text ---- */
   --fn-text-primary: rgba(255, 255, 255, 0.9);

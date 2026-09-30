@@ -185,7 +185,7 @@
   --card-fs-meta: 12px;
   --card-chip-radius: 8px;
   --card-chip-pad: 1px 6px;
-  --card-chip-dot: 3px;
+  --card-chip-dot: 6px;
   --card-bar-w: 3px;
   --card-bar-gap: 2px;
   --card-bar-h: 12px;
@@ -205,7 +205,7 @@
 .cardChip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: var(--card-chip-pad);
   border-radius: var(--card-chip-radius);
   background: var(--fn-bg-tertiary);
@@ -214,6 +214,7 @@
 }
 
 .cardChipDot {
+  flex: none;
   width: var(--card-chip-dot);
   height: var(--card-chip-dot);
   border-radius: var(--fn-radius-full);

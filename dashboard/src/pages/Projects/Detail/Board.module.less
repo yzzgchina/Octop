@@ -32,9 +32,9 @@
 
 .column {
   display: flex;
-  flex: 0 0 272px;
+  flex: 0 0 288px;
   flex-direction: column;
-  width: 272px;
+  width: 288px;
   max-height: 560px;
   padding: 12px;
   border: 1px solid var(--fn-border-primary);
@@ -77,7 +77,7 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   min-height: 48px;
   overflow-y: auto;
 }
@@ -102,7 +102,7 @@
   --card-fs-meta: 12px;
   --card-chip-radius: 8px;
   --card-chip-pad: 1px 6px;
-  --card-chip-dot: 3px;
+  --card-chip-dot: 6px;
   --card-bar-w: 3px;
   --card-bar-gap: 2px;
   --card-bar-h: 12px;
@@ -133,6 +133,21 @@
 /* 深色卡片面与列底仅 1.09:1 ⇒ 边框是深色下唯一的边界手段（PLAN §4.3 · F4）。 */
 :global(html[data-theme="dark"]) .card {
   border-color: var(--fn-border-secondary);
+}
+
+/* 选中态竖条（PLAN §A4.1 · SPEC「选中态强调条」）：语义 = 详情已打开（`?task=` 命中）。
+   `padding-left` 取 12px 而非原型字面的 11px：14 − (3 − 1) ⇒ 补掉新增的 2px 净边框，
+   使选中卡与普通卡的内容盒逐位相等；写 11px 会让内容左移 1px、宽 +1px。 */
+.cardSelected {
+  border-left: 3px solid var(--fn-color-brand);
+  padding-left: 12px;
+}
+
+/* ★ 深色特异性必须写死：上方 `:global(html[data-theme="dark"]) .card` 的权重为 (0,2,1)，
+   仅靠 `.cardSelected`（0,1,0）会被它的 `border-color` 灰化；本规则同权重且在其后 ⇒ 胜出。
+   禁止 !important。不做底色（`SPEC.md · U-1` 未拍板）。 */
+:global(html[data-theme="dark"]) .cardSelected {
+  border-left-color: var(--fn-color-brand);
 }
 
 .cardDragging {
@@ -196,7 +211,7 @@
 .cardChip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: var(--card-chip-pad);
   border-radius: var(--card-chip-radius);
   background: var(--fn-bg-tertiary);
@@ -205,6 +220,7 @@
 }
 
 .cardChipDot {
+  flex: none;
   width: var(--card-chip-dot);
   height: var(--card-chip-dot);
   border-radius: var(--fn-radius-full);
