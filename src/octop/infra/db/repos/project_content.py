@@ -67,6 +67,11 @@ class ProjectCommentRow:
     #: JSON array of {type,id} as submitted by the dashboard, or None when the
     #: comment was created without the field (batch 12; the server never parses it).
     mentions: str | None
+    #: Quote ("引用", PLAN §B3.1): the comment being quoted, plus the excerpt
+    #: captured at write time. No foreign key on purpose — the quoted comment can
+    #: be hard-deleted, and the snapshot is what keeps the quote readable then.
+    parent_comment_id: str | None
+    quote_excerpt: str | None
 
     @classmethod
     def from_row(cls, r: DbRow) -> ProjectCommentRow:
@@ -86,6 +91,10 @@ class ProjectCommentRow:
             created_at=int(r["created_at"]),
             updated_at=int(r["updated_at"]),
             mentions=r["mentions"],
+            parent_comment_id=(
+                str(r["parent_comment_id"]) if r["parent_comment_id"] is not None else None
+            ),
+            quote_excerpt=(str(r["quote_excerpt"]) if r["quote_excerpt"] is not None else None),
         )
 
 
@@ -296,11 +305,19 @@ class ProjectCommentRepo:
         source: str = COMMENT_SOURCE_DASHBOARD,
         node_type: str = COMMENT_NODE_NONE,
         mentions: list[dict[str, str]] | None = None,
+        parent_comment_id: str | None = None,
+        quote_excerpt: str | None = None,
     ) -> ProjectCommentRow:
         """Insert one comment on a discussion line.
 
         ``author_type`` / ``body`` are the service's contract to validate; this
         layer only checks the soft foreign key it cannot delegate.
+
+        ``parent_comment_id`` / ``quote_excerpt`` carry a quote (PLAN §B3.1). The
+        existence / cross-project / cross-task checks are the service's (404
+        family); this layer stores what it is given, and the excerpt is a
+        snapshot so a later hard delete of the quoted comment cannot blank the
+        quote block.
         """
         self._assert_task_ok(project_id, task_id)
         comment_id = self._allocate_id()
@@ -309,8 +326,9 @@ class ProjectCommentRepo:
             conn.execute(
                 "INSERT INTO project_comments("
                 "comment_id, project_id, task_id, thread_id, author_type, author_id, "
-                "body, source, node_type, mentions, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "body, source, node_type, mentions, parent_comment_id, quote_excerpt, "
+                "created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     comment_id,
                     project_id,
@@ -327,6 +345,8 @@ class ProjectCommentRepo:
                     # The server stores what the dashboard picked; it never parses the
                     # body (design P1 = (c)).
                     json.dumps(mentions, ensure_ascii=False) if mentions is not None else None,
+                    parent_comment_id,
+                    quote_excerpt,
                     ts,
                     ts,
                 ),
