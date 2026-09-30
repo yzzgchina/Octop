@@ -167,6 +167,14 @@ because each request is a one-shot continuation.
 | `PATCH`  | `/agents/{id}/chat/sessions/{thread_id}` | owner | body `{title?, pinned?}` → updated row |
 | `DELETE` | `/agents/{id}/chat/sessions/{thread_id}` | owner | `204` (archives the active row) |
 | `GET`    | `/agents/{id}/chat/sessions/{thread_id}/history` | owner | paginated message history; `turn_active` tells a reconnecting client whether to re-`subscribe` over the chat WebSocket |
+| `GET`    | `/agents/{id}/threads/{thread_id}/history` | owner | **thread history** (rooms/dispatch threads included): `messages` + `turn_active` + `next_cursor`; auth = `_require_thread` — agent access, thread belongs to that agent, **and the caller owns the thread** |
+
+> ⚠️ **Room content is read through the thread endpoint above.**
+> `/api/threads/{thread_id}/history` and `/api/threads/{id}/messages` are **not**
+> history read ports — no such routes exist (they 404). The `/api/threads/*`
+> namespace holds exactly one endpoint, `GET /api/threads/summary`
+> (`src/octop/api/routers/chat/sessions.py`), which filters by `threads.user_id`
+> only. For expert-team rooms see `docs/expert-teams.md` → 「房间与转播 · 读回房间内容」.
 
 **Tool result blocks.** `tool_result` blocks in history (and `tool_result`
 frames on the chat WebSocket) carry the tool's return value in `output`. When a
@@ -447,7 +455,8 @@ endpoint (public, mounted directly in `api/app.py`).
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET`/`POST` | `/update/status`, `/check`, `/upgrade`, `/progress`, `/restart` | admin | in-place server update flow |
-| `GET`/`POST`/`DELETE` | `/ollama/...` | user | Ollama model discovery + downloads |
+| `GET`/`POST`/`DELETE` | `/ollama-models/...` | `ollama_models` | Ollama model discovery + downloads |
+| `GET`/`PUT` | `/ollama-models/service` | `ollama_models` | Local daemon toggle; omit `enabled` to set `models_dir` only |
 | `GET` | `/i18n/tools` | user | server-owned tool display names (locale-aware) |
 | `GET` | `/i18n/locales` | public | available locales + fallback chain |
 | `GET` | `/i18n/locales/{locale}/{namespace}` | public | one namespace bundle (errors, tools, channel, slash) |

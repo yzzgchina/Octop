@@ -155,7 +155,7 @@ class ProjectDiscussion:
 
         The author check matches ``author_type`` *and* ``author_id``: an agent row
         whose id happens to equal a user's id is not that user's comment
-        (``019_projects.sql`` stores the two columns separately).
+        (``020_projects.sql`` stores the two columns separately).
         """
         row = self._comments.get(comment_id)
         if row is None or row.project_id != project_id:

@@ -1,0 +1,17 @@
+{
+  "schema": "octop.audit.exemptions/1",
+  "entry_count": 1,
+  "frozen_at": "2026-09-29T10:56:30+08:00",
+  "at_commit": "fccd817c",
+  "entries": [
+    {
+      "criterion": "AUD-S5",
+      "path": "src/octop/infra/connectors/gateway/adapters/fliggy.py",
+      "line": 21,
+      "anchor": "_SIGN_SECRET = \"XSbdYnucPARDc9knhD8+X6hxdD1Nh6ZGI6Hadg25kBw=\"",
+      "value_fragment": "XSbdYnucPARDc9knhD8+X6hxdD1Nh6ZGI6Hadg25kBw=",
+      "reason": "协议常量（:20 注明 public signing material from @fly-ai/flyai-cli）",
+      "ledger_card": "T-AUDIT-GATE"
+    }
+  ]
+}

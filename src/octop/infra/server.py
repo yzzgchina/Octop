@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import logging
 import os
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from octop.config import OctopConfig, load_config
+from octop.infra.agents.access import assert_agent_owner
 from octop.infra.agents.experts.catalog import ExpertCatalog, default_library_root
 from octop.infra.agents.manager import AgentManager
 from octop.infra.agents.plugins.manager import PluginManager
@@ -22,6 +24,7 @@ from octop.infra.cron.manager import CronManager
 from octop.infra.db.factory import open_database, should_defer_control_plane_db
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.services import SharedServices, build_shared_services
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.gateway import Gateway
 from octop.infra.mobile.config_probe import ensure_mobile_capabilities_probed
 from octop.infra.proactive.scheduler import ProactiveCareScheduler
@@ -216,6 +219,7 @@ class AppRuntime:
     proactive_scheduler: ProactiveCareScheduler
     trajectory_service: TrajectoryService | None = None
     history_archive: Any | None = None
+    bridge_manager: Any | None = None
 
     def replace_services(self, services: SharedServices, config: OctopConfig) -> None:
         """Retarget all runtime singletons onto a new SharedServices / config.
@@ -259,6 +263,27 @@ class OctopServer:
     def user_manager(self) -> UserManager | None:
         return self.app_runtime.user_manager if self.app_runtime else None
 
+    def _authorize_agent_action(self, row: Any, user_id: int) -> None:
+        """Authorize an agent action addressed by **user id** — T-49's injected seam.
+
+        ``SlashCtx.authorize_agent_action`` carries a bare ``user_id`` (that is all a
+        slash context knows), while the single predicate
+        (``infra/agents/access.py · assert_agent_owner``) needs a user object exposing
+        ``is_admin`` — and ``UserRow`` has no such attribute
+        (``infra/db/repos/users.py``; ``is_admin`` is derived on
+        ``infra/users/identity.py · User``). Resolving the id **here**, where the
+        ``UserManager`` lives, is what keeps the decision in one place instead of
+        re-deriving the rule for the id-shaped seam.
+
+        A user that cannot be resolved (deleted or disabled — ``UserManager`` keeps
+        only enabled users in its cache) is refused rather than treated as a
+        non-admin: an unknown subject must not be able to act.
+        """
+        user = self.user_manager.get_by_id(user_id) if self.user_manager is not None else None
+        if user is None:
+            raise OctopError(ErrorCode.FORBIDDEN, "user not active")
+        assert_agent_owner(row, user)
+
     @property
     def sso_service(self) -> SsoService:
         """Process-level SSO service so discovery/JWKS cache survives across requests."""
@@ -277,6 +302,33 @@ class OctopServer:
     @property
     def database_bound(self) -> bool:
         return self.services is not None and self.app_runtime is not None
+
+    def _kb_archiver_factory(self, kb_id: str, artifact_id: str, *, actor_user_id: int) -> Any:
+        """Archive a workflow artifact into its project KB and bind the reference.
+
+        T-71: this is the **injector** that T-45's archival hop never had -- without it
+        `write_artifact`'s hop was dead code in production (`kb_document_id` was never
+        written). Built per call because the archiver is scoped to one
+        `(kb_id, artifact_id)` pair, and called with the **real actor** because
+        ``KnowledgeService`` authorises the write by actor (`require_owner`); recording
+        it under a system account would be both dishonest and liable to be refused.
+        """
+        from octop.infra.agents.teams.learnings import (  # noqa: PLC0415
+            KnowledgeServiceDocuments,
+            ProjectKbArchiver,
+        )
+        from octop.infra.knowledge.service import KnowledgeService  # noqa: PLC0415
+
+        services = self.services
+        assert services is not None  # the boot chain wires this before binding runtime
+        return ProjectKbArchiver(
+            documents=KnowledgeServiceDocuments(
+                KnowledgeService(services), actor_user_id=actor_user_id
+            ),
+            artifacts=services.project_artifact_repo,
+            kb_id=kb_id,
+            artifact_id=artifact_id,
+        )
 
     async def start(self) -> None:
         if self._started:
@@ -411,13 +463,37 @@ class OctopServer:
             TrajectoryLiveBus(),
         )
 
+        # T-49: the two ``/team`` runtime handles. ``SharedServices.team_run_service()``
+        # is **memoised** (and honours ``workspace_for`` only on the **first** call), so
+        # the roster resolver has to go in here, on that first call: every later caller --
+        # the gateway below, the HTTP routers, the slash handlers -- gets this same
+        # object, which is also the one ``bind_runtime`` mutates in place just after.
+        # ``workspace_for=registry.team_workspace_for`` gives the roster the **same**
+        # resolver the registry's own ``TeamService`` uses — one named seam, not two
+        # lookalikes: live handle first, backend workspace rebuilt from the agent row as
+        # fallback. So a **stopped** agent still resolves a non-empty roster; the old
+        # harness-only accessor resolved nothing without a live handle and silently
+        # produced zero-member runs.
+        team_run_service = self.services.team_run_service(workspace_for=registry.team_workspace_for)
         gateway = Gateway(
             agent_manager=registry,
             repos=self.services.repos,
             trajectory_service=trajectory_service,
             history_archive=history_archive,
+            team_run_service=team_run_service,
+            authorize_agent_action=self._authorize_agent_action,
         )
         await gateway.boot()
+
+        # T-49 ③: the run service's runtime handles. ``_open_room`` returns ``None``
+        # without a gateway, so an unbound service silently opens no room (and the
+        # decision gate can never suspend). Bound **after** the gateway exists —
+        # ``bind_runtime`` mutates in place, so the gateway already holds this object.
+        team_run_service.bind_runtime(
+            agent_manager=registry,
+            gateway=gateway,
+            kb_archiver_factory=self._kb_archiver_factory,
+        )
 
         from octop import __version__  # noqa: PLC0415
 
@@ -481,6 +557,35 @@ class OctopServer:
         await user_mgr.boot()
         await proactive_scheduler.start_all()
 
+        from octop.infra.bridge.manager import BridgeManager, public_base_url_from_config
+        from octop.infra.users.tokens import sign_token
+
+        services = self.services
+        if services is None:
+            raise RuntimeError("shared services not ready for bridge")
+
+        def _sign_user_token(user: Any) -> str:
+            secret = services.secret_repo.get("jwt")
+            if secret is None:
+                raise RuntimeError("jwt secret missing")
+            ttl = services.config.access_token_ttl_seconds
+            return sign_token(
+                secret,
+                sub=int(user.id),
+                uname=str(user.username),
+                role=str(user.role),
+                ttl_seconds=ttl,
+            )
+
+        advertise = public_base_url_from_config(config.bind_host, config.port)
+        bridge_mgr = BridgeManager(
+            bridge_repo=services.bridge_connection_repo,
+            secret_repo=services.secret_repo,
+            user_repo=services.user_repo,
+            advertise_base_url=advertise,
+            token_signer=_sign_user_token,
+        )
+
         self.app_runtime = AppRuntime(
             agent_registry=registry,
             gateway=gateway,
@@ -489,10 +594,18 @@ class OctopServer:
             proactive_scheduler=proactive_scheduler,
             trajectory_service=trajectory_service,
             history_archive=history_archive,
+            bridge_manager=bridge_mgr,
         )
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
         resume_pending_index_jobs(self.services)
+
+        # Resume Bridge links that opted into auto-reconnect (best-effort).
+        async def _resume_bridges() -> None:
+            with suppress(Exception):
+                await bridge_mgr.resume_auto_connections()
+
+        asyncio.create_task(_resume_bridges(), name="bridge-auto-resume")
 
     def _emit_wizard_password(self, *, user_count: int) -> None:
         config = self.config

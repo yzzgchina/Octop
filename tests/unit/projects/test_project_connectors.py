@@ -167,8 +167,8 @@ def test_declaration_table_stores_kind_only(env: SimpleNamespace) -> None:
     }
     for path in (
         "src/octop/infra/db/repos/project_connectors.py",
-        "src/octop/infra/db/migrations/021_project_config.sql",
-        "src/octop/infra/db/migrations/021_project_config.pg.sql",
+        "src/octop/infra/db/migrations/022_project_config.sql",
+        "src/octop/infra/db/migrations/022_project_config.pg.sql",
     ):
         assert "instance_id" not in Path(path).read_text(encoding="utf-8"), path
 

@@ -99,3 +99,52 @@ def tmp_octop_home(_isolated_user_home: Path) -> Iterator[Path]:
     octop = _isolated_user_home / ".octop"
     octop.mkdir(exist_ok=True)
     yield octop
+
+
+@pytest.fixture(autouse=True)
+def _isolated_plugin_registry() -> Iterator[None]:
+    """Reset the **process-wide** plugin registry around every test.
+
+    ``octop_harness.plugins.PluginRegistry`` is a singleton: whatever a test loads into
+    it stays visible to every later test in the same worker, and that visibility reaches
+    the product path, not just the tests.
+
+    **Why this net has to exist** (mechanism, measured — A-BLOCK 定性, pre-existing):
+
+    * ``infra/agents/plugins/plugin_tool_defaults.py:98-102`` skips a plugin only when
+      ``global_plugins.get(pid) is False``. A **missing key is not ``False``**, and
+      ``agent_plugin_enabled`` defaults to ``True`` — so a plugin that is merely
+      *registered* while absent from ``global_plugins`` is attached to **every** agent
+      built afterwards.
+    * Two measured polluters, each leaving its plugin behind:
+      - ``tests/integration/test_plugin_tool_disable.py::test_disable_plugin_tool_via_admin_plugins_api``
+        → residual ``echo-tool``;
+      - ``tests/unit/test_bundled_plugins_layout.py::test_market_install_copies_from_catalog``
+        → residual ``air-quality`` (an extra ``get_air_quality`` tool).
+    * Victims: ``tests/unit/agents/test_agent_manager.py::test_build_harness_config_includes_search_knowledge_without_cron``
+      and ``::test_build_harness_config_includes_cronjob_tools_when_cron_manager_set``.
+      Minimal trios (polluter + both victims, ``-p no:randomly``) fail ``2 failed, 1 passed``
+      before this fixture and pass afterwards.
+    * Why it stayed hidden: that layout file's **last** test
+      (``test_offline_bundled_plugins_load``) ends in ``finally: PluginRegistry.reset()``,
+      so any run that also executes it happens to clean up; ``-n`` parallelism hides the
+      leak behind process isolation; and ``PluginManager.load_installed()`` begins with
+      ``PluginRegistry().clear()`` (``plugins/manager.py:397``) — the only incidental
+      cleaner, and only on that one code path.
+
+    **Scope of ``reset()``** — it drops the singleton (``cls._instance = None``), so the
+    next ``PluginRegistry()`` starts empty. It does **not** mutate an instance someone
+    already holds, and it does not touch plugin config (``config.json → plugins``) or
+    on-disk plugin directories. That is exactly the scope needed: polluters register into
+    the singleton, victims read it through a *fresh* ``PluginRegistry()`` lookup.
+
+    **No assertion semantics change.** The files that already reset locally
+    (``tests/unit/test_plugin_seed.py``, ``tests/unit/test_plugins.py``,
+    ``tests/unit/test_plugin_manager.py``) keep their own autouse fixtures — they remain
+    self-contained when selected alone — and this global net is strictly additive.
+    """
+    from octop_harness.plugins import PluginRegistry
+
+    PluginRegistry.reset()
+    yield
+    PluginRegistry.reset()

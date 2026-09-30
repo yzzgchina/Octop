@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -74,6 +75,63 @@ def _mount_routers(app: FastAPI, mounts: Sequence[_RouterMount]) -> None:
         app.include_router(spec.router, prefix=spec.prefix, tags=list(spec.tags))
 
 
+def _json_dumps(value: Any) -> str:
+    """Serialization contract shared by the ``details`` probe and the response body.
+
+    The arguments **must stay identical to** ``JSONResponse.render`` (Starlette renders
+    with ``json.dumps(content, ensure_ascii=False, allow_nan=False, …)``). Probing with
+    plain ``json.dumps(value)`` uses ``allow_nan=True``, so a ``float('nan')`` / ``inf``
+    passes the probe while rendering then raises
+    ``ValueError: Out of range float values are not JSON compliant`` — **inside the
+    exception handler itself** — leaving a bare 500 with every detail lost. Keeping this
+    the only dumper used for probing closes that "probe passes, render explodes" hole.
+    """
+    return json.dumps(value, ensure_ascii=False, allow_nan=False)
+
+
+def _jsonable_details(details: dict[str, Any]) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+    """Probe each ``details`` value with ``_json_dumps``, degrading only the failures.
+
+    ``OctopError.details`` reaches the response body verbatim (``errors.py``), so a raw
+    exception object in a value makes Starlette's ``JSONResponse.render`` raise
+    ``TypeError`` **inside the exception handler itself** — the client then only sees a
+    bare 500 with every detail lost (SEC-17). A serializable value is kept untouched
+    (identity); a failing value degrades to the safe subset
+    ``{"unserializable": type(v).__name__}``, which keeps a locatable category without
+    leaking the object. The second return value names the degraded keys so the caller
+    can log them — into the log only, never into the response body.
+    """
+    safe: dict[str, Any] = {}
+    dropped: list[tuple[str, str]] = []
+    for key, value in details.items():
+        try:
+            _json_dumps(value)
+        except (TypeError, ValueError):
+            type_name = type(value).__name__
+            safe[key] = {"unserializable": type_name}
+            dropped.append((key, type_name))
+        else:
+            safe[key] = value
+    return safe, dropped
+
+
+def _renderable_envelope(exc: OctopError, locale: str | None = None) -> dict[str, Any]:
+    """``exc.to_envelope(...)`` with a body that ``JSONResponse.render`` can serialize.
+
+    Identity for every JSON-serializable ``details`` (the normal path is byte-for-byte
+    unchanged); only unserializable values are replaced, and each replacement is logged
+    with the fixed ``octop.error.details-unserializable`` token.
+    """
+    envelope = exc.to_envelope(locale=locale)
+    details: Any = envelope["error"]["details"]
+    safe, dropped = _jsonable_details(details)
+    for key, type_name in dropped:
+        logger.warning("octop.error.details-unserializable key=%s type=%s", key, type_name)
+    if dropped:
+        envelope["error"]["details"] = safe
+    return envelope
+
+
 def _install_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(OctopError)
     async def _octop(request: Request, exc: OctopError) -> JSONResponse:
@@ -88,7 +146,7 @@ def _install_exception_handlers(app: FastAPI) -> None:
                 exc_info=exc,
             )
         locale = resolve_request_locale(request)
-        return JSONResponse(status_code=exc.status, content=exc.to_envelope(locale=locale))
+        return JSONResponse(status_code=exc.status, content=_renderable_envelope(exc, locale))
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
@@ -129,8 +187,16 @@ def build_app(server: OctopServer) -> FastAPI:
             expose_headers=[ACCESS_TOKEN_RESPONSE_HEADER],
         )
 
+    from octop.api.middleware.bridge_proxy import install as install_bridge_proxy
+
+    # Bridge proxy must sit inside JWT auth so ``request.state.octop_user`` is set
+    # (Starlette runs the last-added middleware first).
+    install_bridge_proxy(app, server)
     install_jwt_auth(app, server)
     install_setup_lockdown(app, server)
+
+    if server.app_runtime is not None and server.app_runtime.bridge_manager is not None:
+        server.app_runtime.bridge_manager.bind_asgi_app(app)
 
     from octop.infra.setup.tls.challenge import challenge_store
 
@@ -151,6 +217,7 @@ def build_app(server: OctopServer) -> FastAPI:
         auth_oauth,
         auth_oidc,
         backup,
+        bridge,
         browser,
         channels,
         chat,
@@ -190,6 +257,7 @@ def build_app(server: OctopServer) -> FastAPI:
         skills,
         slash,
         subagents,
+        team_runs,
         teams,
         terminal,
         update,
@@ -229,6 +297,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(chat.router, "/api", ["chat"]),
             _RouterMount(slash.router, "/api", ["slash"]),
             _RouterMount(connectors.router, "/api", ["connectors"]),
+            _RouterMount(bridge.router, "/api", ["bridge"]),
             _RouterMount(knowledge_bases.router, "/api", ["knowledge"]),
             _RouterMount(projects.router, "/api", ["projects"]),
             _RouterMount(project_tags.router, "/api", ["projects"]),
@@ -265,6 +334,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(filesystem_router, "/api/filesystem", ["filesystem"]),
             _RouterMount(mbti.router, "/api", ["mbti"]),
             _RouterMount(experts.router, "/api", ["experts"]),
+            _RouterMount(team_runs.router, "/api", ["team-runs"]),
             _RouterMount(teams.router, "/api", ["teams"]),
             _RouterMount(workspace.router, "/api", ["workspace"]),
             _RouterMount(agent_files.router, "/api", ["agent_files"]),

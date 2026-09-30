@@ -25,8 +25,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from sqlite3 import IntegrityError as SqliteIntegrityError
 from typing import TYPE_CHECKING, Any, Protocol
 
+from psycopg import IntegrityError as PsycopgIntegrityError
+
+# G6's single implementation (T-10). Imported from the domain, not re-implemented here:
+# both task write entries must validate the **same** board with the **same** rule.
+from octop.infra.agents.teams.pipeline import validate_task_graph
 from octop.infra.db.repos._base import UNSET
 from octop.infra.db.repos.project_tasks import (
     TASK_STATUSES,
@@ -387,13 +393,35 @@ class ProjectService:
                 role="owner",
             )
             if bind_kb:
-                kb_id = str(  # ③
-                    self._knowledge.create_base(owner_user_id=owner_user.id, name=name).id
-                )
+                try:
+                    kb_id = str(  # ③
+                        self._knowledge.create_base(owner_user_id=owner_user.id, name=name).id
+                    )
+                except (SqliteIntegrityError, PsycopgIntegrityError) as err:
+                    # ★ Concurrent same-name create. The ⓪ pre-check is only a **read**,
+                    # so two requests can both pass it; ``UNIQUE(owner_user_id, name)`` on
+                    # ``knowledge_bases`` is the real arbiter. Report the loss exactly as
+                    # the sequential path does -- same code, same message, same details --
+                    # instead of letting the generic wrap below turn a user-visible
+                    # conflict into a 500 ``PROJECT_KB_BIND_FAILED``. ``kb_id`` stays
+                    # ``None``, so the compensating delete removes only our own project
+                    # and never the winner's KB.
+                    raise OctopError(
+                        ErrorCode.KNOWLEDGE_NAME_TAKEN,
+                        "You already have a knowledge base with this name.",
+                        details={"name": name},
+                    ) from err
                 self._projects.set_kb_id(project.id, kb_id)  # ④
         except Exception as exc:
             self._compensate_create(project=project, kb_id=kb_id)
-            if isinstance(exc, OctopError) and exc.code is ErrorCode.PROJECT_KB_BIND_FAILED:
+            # Two codes already say what happened and must keep their status:
+            # ``PROJECT_KB_BIND_FAILED`` is the honest answer for a real ③/④ failure,
+            # and ``KNOWLEDGE_NAME_TAKEN`` (409) for the concurrent name collision above
+            # -- re-wrapping it here would report the same event as a 500 instead.
+            if isinstance(exc, OctopError) and exc.code in (
+                ErrorCode.PROJECT_KB_BIND_FAILED,
+                ErrorCode.KNOWLEDGE_NAME_TAKEN,
+            ):
                 raise
             raise OctopError(
                 ErrorCode.PROJECT_KB_BIND_FAILED,
@@ -403,6 +431,7 @@ class ProjectService:
 
         created = self._projects.get(project.id)
         if created is None:
+            # no-details: 服务端自身状态/依赖缺失：无调用者可见标识可加（message 已是全部定位）
             raise OctopError(
                 ErrorCode.PROJECT_KB_BIND_FAILED,
                 "Project disappeared right after creation.",
@@ -572,6 +601,49 @@ class ProjectService:
         self.assert_project_role(project_id, user=user, required=PROJECT_ARCHIVE)
         return self._projects.delete(project_id)
 
+    def discard_created_project(self, project_id: str) -> None:
+        """Undo a creation that never became a real project — including its KB.
+
+        The inverse of :meth:`create_project`, and **deliberately not**
+        :meth:`delete_project`. That one keeps the knowledge base because the KB may
+        hold documents the caller never asked to destroy. Here the project is being
+        discarded *inside the very call that created it*: nothing has been shown to a
+        user, and the KB was created moments ago by the same call with no documents in
+        it. Leaving that KB behind is not harmless — it consumes the owner's KB quota
+        (``MAX_BASES_PER_OWNER``), a retry with the same name then fails with
+        ``KNOWLEDGE_NAME_TAKEN``, and after enough leaks every later create is refused
+        with ``KNOWLEDGE_BASE_LIMIT`` even though no project survived.
+
+        The ``kb_id`` is **re-read from the row** on purpose: :meth:`create_project`
+        writes it back in step ④, after the caller already holds a row object, so a
+        caller's copy can be stale.
+
+        No permission check: this is a rollback of the caller's own write, and the
+        compensating paths run while the original error is in flight.
+
+        **Never raises.** Every step is logged and swallowed, the same discipline as
+        :meth:`_compensate_create`: a stale row is recoverable, an exception chain that
+        hides the original refusal is not.
+        """
+        try:
+            row = self._projects.get(project_id)
+        except Exception:  # noqa: BLE001 - compensation must not raise
+            logger.exception("discarding project: read failed (project_id=%s)", project_id)
+            return
+        if row is None:
+            return
+        logger.warning("discarding created project (project_id=%s kb_id=%s)", row.id, row.kb_id)
+        if row.kb_id:
+            try:
+                self._knowledge.delete_base(row.kb_id, actor_user_id=row.owner_user_id)
+            except Exception:  # noqa: BLE001 - compensation must not raise
+                logger.exception("discarding project: KB delete failed (kb_id=%s)", row.kb_id)
+        try:
+            # Membership and timeline rows cascade with the project.
+            self._projects.delete(project_id)
+        except Exception:  # noqa: BLE001 - compensation must not raise
+            logger.exception("discarding project: delete failed (project_id=%s)", project_id)
+
     def _assert_transition(self, project: ProjectRow, target: str) -> None:
         if target not in _TRANSITIONS.get(project.status, frozenset()):
             raise _project_status_invalid(
@@ -690,6 +762,23 @@ class ProjectService:
             status=status,
             **fields,
         )
+        # T-70: G6 also guards **this** entry (the create verb is the third writer of
+        # the same graph). It runs on the board the row has just joined, so the check
+        # sees the **real** id — no placeholder — and a refusal goes through the same
+        # compensation the metadata steps use, which is exactly the promise this
+        # method already makes: "a refused request never leaves a half-built task
+        # behind". Deliberately **before** the ``task.created`` record: a create that
+        # G6 refuses must not be announced as created.
+        if fields.get("deps"):
+            try:
+                self._assert_task_graph(
+                    project_id, task_id=task.id, deps=[str(dep) for dep in fields["deps"]]
+                )
+            except Exception:
+                self._compensate_task_create(
+                    project_id, task.id, user=user, attachment_ids=attachment_ids
+                )
+                raise
         self._record(
             project_id,
             task.id,
@@ -797,7 +886,11 @@ class ProjectService:
     def update_task(
         self, project_id: str, task_id: str, *, user: ProjectActor, **fields: Any
     ) -> ProjectTaskRow:
-        """Patch task fields other than status (that goes through the state machine)."""
+        """Patch task fields other than status (that goes through the state machine).
+
+        A ``deps`` change runs **G6** on the resulting board first (T-70): this route
+        and the team route write the *same* graph, so both must clear the same gate.
+        """
         task = self._require_task(project_id, task_id)
         self.assert_project_role(project_id, user=user, required=PROJECT_WRITE)
         if fields.get("status") is not None:
@@ -809,6 +902,11 @@ class ProjectService:
             _check_task_dates(
                 fields.get("start_at", task.start_at),
                 fields.get("due_at", task.due_at),
+            )
+        if fields.get("deps") is not None:
+            # Before the write, so a refused patch leaves the board untouched.
+            self._assert_task_graph(
+                project_id, task_id=task_id, deps=[str(dep) for dep in fields["deps"]]
             )
         updated = self._tasks.update(task_id, **fields)
         if updated is None:
@@ -932,6 +1030,42 @@ class ProjectService:
         """Chronological project timeline (oldest first); ``task_id`` narrows it."""
         self.assert_project_role(project_id, user=user, required=PROJECT_READ)
         return self._timeline.list_by_project(project_id, limit=limit, task_id=task_id)
+
+    def _assert_task_graph(self, project_id: str, *, task_id: str, deps: Sequence[str]) -> None:
+        """Run **G6** on the board this write would produce (T-70).
+
+        The board is the project's tasks — and that is not a coincidence: the team
+        path's ``TeamRunService.list_tasks(run_id)`` **is** ``list_by_project(
+        run.project_id)``, so the two entries validate the very same graph with the
+        very same rule (``pipeline.validate_task_graph``, G6's single implementation).
+        Passing a second, project-local copy of the rule is the "two implementations"
+        failure this repo keeps killing.
+
+        ``deps`` is the caller's **proposed** value for ``task_id``; every other row
+        keeps what it has. Nothing is written here — a refusal leaves the board as it
+        was.
+
+        ⚠️ **Known gap (delete this paragraph once empty deps are normalised on write)**:
+        an **empty-string** dependency (``deps: [""]``) is stored verbatim by the write
+        paths and filtered here by ``pipeline._task_deps`` (``if str(dep)``) ⇒ it is not
+        a graph violation, but the row keeps a meaningless dependency. Measured in T-70
+        (``POST /api/projects/{id}/tasks {"deps": [""]}`` ⇒ 201, ``deps: [""]`` on the
+        row); deliberately not carded — the removal condition is "the write path starts
+        normalising empty dependencies".
+        """
+        board = [
+            {
+                "id": row.id,
+                "dependsOn": [str(dep) for dep in (deps if row.id == task_id else row.deps)],
+                "status": row.status,
+                "kind": row.kind,
+                "verify": list(row.verify),
+                "role": row.claimed_by or "",
+                "round": row.round,
+            }
+            for row in self._tasks.list_by_project(project_id)
+        ]
+        validate_task_graph(board)
 
     def _record(
         self,

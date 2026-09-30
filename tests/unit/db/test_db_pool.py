@@ -677,6 +677,29 @@ def test_v14_to_v15_adds_sso_provider_kind_without_rebuilding(tmp_path: Path) ->
         conn.execute("DROP INDEX IF EXISTS idx_project_comments_parent")
         conn.execute("ALTER TABLE project_comments DROP COLUMN parent_comment_id")
         conn.execute("ALTER TABLE project_comments DROP COLUMN quote_excerpt")
+        # 025 follows the same pattern: undo every column it adds so the rewind
+        # models a real pre-025 database (its four tables are ``CREATE TABLE IF NOT
+        # EXISTS`` and its lead rule is ``CREATE UNIQUE INDEX IF NOT EXISTS``, so
+        # only the ADD COLUMNs need unwinding here).
+        for column in (
+            "kind",
+            "acceptance",
+            "in_scope",
+            "verify",
+            "changed_paths",
+            "round",
+            "verdict",
+            "attempt",
+            "attempt_id",
+            "claimed_by",
+            "claimed_at",
+            "started_at",
+            "phase",
+        ):
+            conn.execute(f"ALTER TABLE project_tasks DROP COLUMN {column}")
+        conn.execute("ALTER TABLE project_artifacts DROP COLUMN owner_role")
+        conn.execute("ALTER TABLE project_artifacts DROP COLUMN phase")
+        conn.execute("ALTER TABLE threads DROP COLUMN pending_decision")
         conn.execute("UPDATE _schema_version SET version = 14")
         conn.execute(
             """

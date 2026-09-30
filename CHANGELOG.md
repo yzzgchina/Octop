@@ -6,8 +6,67 @@
 
 ## [Unreleased]
 
+## [1.0.3b2] - 2026-09-30
+
+> **本版基线** = `v1.0.2b5` + 本仓集成线（原 `1.0.3b1`）。上游 `v1.0.2b4` / `v1.0.2b5` 的 release 提交已全部并入。
+
+### 变更
+
+- **与上游 `v1.0.2b5` 对齐**：并入上游 b4 + b5 的 release 提交（Octop↔Octop 云端桥接、账号自定义侧栏与角色模板 id、内置助手产品问答、Ollama 下载目录、移动端采集与 CSP / Langfuse / 备份导入等修复）
+- **迁移重编号（019–025 → 020–026）**：本线项目域 / 评论 / 团队 run 的 7 个迁移整体后移到上游 `019_bridge_connections` 之后 —— `019_projects` → `020_projects`、`020_project_task_metadata` → `021_project_task_metadata`、`021_project_config` → `022_project_config`、`022_project_comment_concluded_by` → `023_project_comment_concluded_by`、`023_comment_edit_delete_attachments` → `024_comment_edit_delete_attachments`、`024_comment_mentions` → `025_comment_mentions`、`025_team_runs` → `026_team_runs`。`.sql` / `.pg.sql` 成对改名，文件内自述编号同步，schema 水位断言 `25` → `26`
+
+## [1.0.3b1] - 2026-09-30
+
+> **本版基线** = `v1.0.2b3` + 72 个提交（本仓集成线）。**不含**上游 `v1.0.2b4` / `v1.0.2b5` 的 release 提交；
+> 其中部分上游 PR（README 刷新、账号自定义侧栏、角色模板 id 等）已通过并行集成进入本线。
+
+### 新增
+
+- **项目管理域**：7 状态任务机 + 6 状态项目机、成员与权限矩阵、看板（拖拽 + 筛选）、任务讨论线、项目动态 feed 与完整状态流转史、标签 / 自定义字段 / 附件三个子系统、项目知识库资产只读浏览（成员可读）
+- **专家团（团队 run）**：计划门草稿（`stage` / `approve` / `discard`）与中断收尸 `settle`、治理三卡（沉默清单 / 单源化总扫 / 引用锚点机判）、`.octop/team/**` 写入授权收紧（409）、建 run 准入 A/B 双层、learnings 注入接线、团队产物与工具轨迹
+- **凭据安全**：`providers` / `voice_providers` / `storage_backends` 三类凭据列与 langfuse 凭据改 Fernet 加密落库（专用键 `*_fernet`）+ 存量迁移；响应面 `api_key` 明文回显改为 `api_key_set` 布尔（8 个响应点单一出处）、两条读接口加 `require_permission`；codex_oauth.json 原子写与 0600
+- **审计与门禁**：独立 `make audit`（9 条判据 + 逐字豁免）、AUD-S6 判据（凭据语义列 × 写入点未加密）与反攻击探针、前端门禁接进 ship bar 与 CI 两个 job、D-8 可测性门
+
 ### 修复
-- 暗色主题下知识库 Markdown 预览白底白字导致正文不可见（补上未定义的 `--fn-bg-container` 主题变量，Fixes #1215）。
+
+- **团队 run 创建原子性（四连修）**：空花名册 fail-fast（422，落点在首个写之前）→ 冲突判定与逐成员校验前移（各类拒绝零写入）→ 首个写之后的失败改**显式补偿删除**（stage-aware，含 KB 撤销）→ 同 goal 并发撞 KB 名与顺序路径**同码 409**（消除 500）
+- 服务重启不再从 launchd job 内部卸载自己（修「服务从 launchd 域消失」）
+- 暗色主题下知识库 Markdown 预览白底白字导致正文不可见（补上未定义的 `--fn-bg-container` 主题变量，Fixes #1215）
+- 工作区写入收敛为单入口（`.octop/team` 409 / `_builtin_skills` 403）；`details` 泄露面 15 处归零 + 5xx 封装防二次崩
+- 看板：6 条长期红修复 + ESLint errors 归零；`AuthGuard` 失效节点断言删除；`JournalList` DOM 断言改 `waitFor`；`TaskCreateModal` 受害用例加单点预算
+
+### 变更
+
+- 前端门禁（`lint-frontend` / `test-frontend`）纳入 `make all` 与 pre-commit 钩子；钩子实际执行 `make precommit`（`AGENTS.md` / `Makefile` 已纠正「钩子跑 `make all`」的不实描述）
+
+## [1.0.2b5] - 2026-09-29
+
+### 新增
+- Octop↔Octop 云端桥接，经隧道使用远程专家
+- 内置助手可回答产品与使用问题
+- 可配置 Ollama 本地模型下载目录
+- 账号可自定义侧边栏；角色字段改为存储模板 id
+
+### 修复
+- 媒体预览 CSP、Langfuse 环境变量、IM 附件元数据
+- CLI 状态文件原子读写；移动端采集失败后停止 JPEG 流
+- 服务关闭时仍可识别本机 Ollama 模型
+- Dashboard 设计 token、知识库暗色预览、备份导入内置技能过滤
+- 旧插件 `harness_agent` 导入；移动端输入框避让视口
+
+### 变更
+- 更新 README 路线图、锚点与产品名链接
+
+## [1.0.2b4] - 2026-09-27
+
+### 新增
+- 侧栏可按账号自定义；角色模板 id 持久化
+
+### 修复
+- 暗色主题下知识库 Markdown 预览不可见
+
+### 变更
+- README 路线图与产品链接更新
 
 ## [1.0.2b3] - 2026-09-26
 
