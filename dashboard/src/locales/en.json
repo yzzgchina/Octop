@@ -75,7 +75,12 @@
     "copyErrorForOctop": "Copy error details",
     "installLogEmpty": "(No install log available)",
     "tokenCountPresets": "Quick fill",
-    "tokenCountPreview": "About {{label}} tokens ({{exact}})"
+    "tokenCountPreview": "About {{label}} tokens ({{exact}})",
+    "cardMenuOpen": "Open details",
+    "cardMenuCopyLink": "Copy link",
+    "cardPriorityLow": "Low",
+    "cardPriorityMid": "Medium",
+    "cardPriorityHigh": "High"
   },
   "apiErrors": {
     "AUTH_FAILED": "Authentication failed.",

@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import {
+  Avatar,
   Button,
   Checkbox,
+  Dropdown,
   Empty,
   Input,
   Modal,
@@ -13,17 +15,23 @@ import {
   Tooltip,
   Typography,
 } from "antd";
+import type { MenuProps } from "antd";
 import {
+  Bot,
   CalendarDays,
   Check,
+  CircleHelp,
   History,
+  MoreHorizontal,
   Plus,
   Search,
   Send,
   User,
+  Users,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 
 import {
   projectsApi,
@@ -33,9 +41,11 @@ import {
   type ProjectTaskStatus,
   type ProjectTimelineEvent,
 } from "../../../api/modules/projects";
+import { useProjectMembers } from "../../../hooks/useProjectMembers";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { message } from "../../../utils/antdMessage";
+import { copyText } from "../../../utils/copyText";
 import { formatServerDateTime } from "../../../utils/formatMessageTime";
 import {
   asTaskStatus,
@@ -76,6 +86,8 @@ interface BoardProps {
   canEdit: boolean;
   /** Re-read the project tasks after a write so the board mirrors the server. */
   onChanged: () => void | Promise<void>;
+  /** Optional: open the task detail. When absent the board navigates itself (§5.1). */
+  onOpenTask?: (taskId: string) => void;
 }
 
 /** Unix seconds in, server-timezone text out (PLAN §0 invariant 3). */
@@ -94,48 +106,146 @@ function formatCustomFieldValue(
   return String(value);
 }
 
-/** Tags + custom-field values under a card's meta row (AC-U-13 / AC-CF-5). */
-function CardMetadata({
-  task,
-  timeZone,
-}: {
-  task: ProjectTask;
-  timeZone: string;
-}) {
-  const tags = task.tags ?? [];
-  const fields = (task.custom_fields ?? []).filter(
-    (field) => formatCustomFieldValue(field.value, field.type, timeZone) !== "",
-  );
-  if (tags.length === 0 && fields.length === 0) return null;
-  return (
-    <div className={styles.cardMetadata}>
-      {tags.map((tag) => (
-        <Tag
-          key={tag.tag_id}
-          color={tag.color || undefined}
-          className={styles.cardTag}
-        >
-          {tag.name}
-        </Tag>
-      ))}
-      {fields.map((field) => (
-        <span key={field.field_id} className={styles.cardMetaItem}>
-          <Text type="secondary" className={styles.cardMetaText}>
-            {`${field.label}：${formatCustomFieldValue(
-              field.value,
-              field.type,
-              timeZone,
-            )}`}
-          </Text>
-        </span>
-      ))}
-    </div>
-  );
+/* ---------------------------------------------------------------------------
+ * Shared card mapping helpers (PLAN §2.4).
+ *
+ * Exported on purpose: `TaskListView.tsx` renders the same card vocabulary
+ * (priority bars, tag chips, single assignee slot) and imports these instead of
+ * growing a second implementation (PLAN §1.2 · D4 / AC-14). Pure functions,
+ * no React dependency.
+ * ------------------------------------------------------------------------- */
+
+/** Coarse priority bucket; the backend accepts any int, so `unknown` is normal. */
+export type PriorityTier = "low" | "mid" | "high" | "unknown";
+
+/**
+ * 优先级档位（暂定 · 待 SPEC 定档：DECISIONS D2 / SPEC R-01）。
+ *
+ * `unknown` is a first-class result — the API does not validate `priority`, so
+ * non-integer / non-finite / null / non-numeric input reaches the card as-is
+ * and must be shown verbatim (`PLAN.md` §4.1). Never throws.
+ * Integers `<= 1` (including `-1` / `0`) are *low*, not unknown.
+ */
+export function priorityTier(p: unknown): PriorityTier {
+  if (typeof p !== "number" || !Number.isInteger(p)) return "unknown";
+  if (p <= 1) return "low";
+  if (p === 2) return "mid";
+  return "high";
 }
 
-function Board({ projectId, tasks, canEdit, onChanged }: BoardProps) {
+/** Lit cells for the 3-bar priority icon; always length 3 (PLAN §4.1). */
+export function priorityBars(tier: PriorityTier): boolean[] {
+  switch (tier) {
+    case "low":
+      return [true, false, false];
+    case "mid":
+      return [true, true, false];
+    case "high":
+      return [true, true, true];
+    default:
+      return [false, false, false];
+  }
+}
+
+/** i18n key for a tier; `unknown` returns `null` ⇒ show the raw value. */
+export function priorityLabelKey(tier: PriorityTier): string | null {
+  switch (tier) {
+    case "low":
+      return "common.cardPriorityLow";
+    case "mid":
+      return "common.cardPriorityMid";
+    case "high":
+      return "common.cardPriorityHigh";
+    default:
+      return null;
+  }
+}
+
+/** Tag chips: at most `max` shown, the rest folded into a `+N` counter. */
+export function tagsPreview<T>(
+  tags: T[] | null | undefined,
+  max = 3,
+): { shown: T[]; more: number } {
+  const list = tags ?? [];
+  return { shown: list.slice(0, max), more: Math.max(list.length - max, 0) };
+}
+
+/** Last 6 characters of an assignee id, `#`-prefixed (shorter ids stay whole). */
+export function shortAssigneeId(id: string | null | undefined): string {
+  const raw = id === null || id === undefined ? "" : String(id);
+  return `#${raw.length > 6 ? raw.slice(-6) : raw}`;
+}
+
+/**
+ * Join key for the member lookup. Both sides must be stringified: the member
+ * row stores `user_id` as a number while `assignee_id` is a string (§3.2).
+ */
+export function memberKey(
+  type: string | null | undefined,
+  id: string | null | undefined,
+): string {
+  return `${String(type)}:${String(id)}`;
+}
+
+/** Resolved display name for an assignee, or `null` when it cannot be resolved. */
+export function resolveAssigneeName(
+  map: Map<string, string>,
+  type: string | null | undefined,
+  id: string | null | undefined,
+): string | null {
+  const name = map.get(memberKey(type, id));
+  if (name === undefined) return null;
+  const trimmed = name.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/** Only an agent / team assignee has a runtime (case-sensitive, §3.1). */
+export function isAgentLike(type: string | null | undefined): boolean {
+  return type === "agent" || type === "team";
+}
+
+/**
+ * Accessible name of the title button. The task number does not exist yet, so
+ * today this is the title verbatim — never a `·`-prefixed or `task_id` variant.
+ */
+export function cardAriaLabel(
+  title: string,
+  taskNumber?: string | null,
+): string {
+  return taskNumber ? `${taskNumber} · ${title}` : title;
+}
+
+/** Fallback glyph per assignee type (R-09): unknown values get a neutral icon. */
+function assigneeIcon(type: string | null | undefined) {
+  if (type === "user") return User;
+  if (type === "agent") return Bot;
+  if (type === "team") return Users;
+  return CircleHelp;
+}
+
+function Board({
+  projectId,
+  tasks,
+  canEdit,
+  onChanged,
+  onOpenTask,
+}: BoardProps) {
   const { t } = useTranslation();
   const timeZone = useServerTimezone();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  /** One member read per board — never per card (AC-13 / R-11). */
+  const { members } = useProjectMembers(projectId);
+  const nameByKey = useMemo(
+    () =>
+      new Map(
+        members.map((member) => [
+          memberKey(member.subject_type, member.subject_id),
+          (member.name ?? "").trim(),
+        ]),
+      ),
+    [members],
+  );
 
   const [titleFilter, setTitleFilter] = useState("");
   // Terminal columns start visible: hiding them is an explicit choice, so a
@@ -171,6 +281,52 @@ function Board({ projectId, tasks, canEdit, onChanged }: BoardProps) {
   const [timelineError, setTimelineError] = useState<unknown>(null);
 
   const timelineTaskId = timelineTask?.task_id ?? null;
+
+  /**
+   * Timestamp of the last finished drag. HTML5 `dragend` may or may not be
+   * followed by a `click` depending on the browser, so the title button only
+   * swallows the click that lands right after a drag (PLAN §5.4 · B-29); a
+   * boolean flag would already be reset by the time that click arrives.
+   */
+  const lastDragEndAtRef = useRef(0);
+
+  /** 打开详情 (§5.1): prop first, otherwise the board's own URL navigation. */
+  // TODO(L1)：待 index.tsx 稳定后统一为 prop 传递，删除本内建导航
+  const openDetail = useCallback(
+    (taskId: string) => {
+      if (onOpenTask) {
+        onOpenTask(taskId);
+        return;
+      }
+      const updated = new URLSearchParams(searchParams);
+      updated.set("tab", "tasks");
+      updated.set("task", taskId);
+      setSearchParams(updated, { replace: false });
+    },
+    [onOpenTask, searchParams, setSearchParams],
+  );
+
+  /** Copy link (§5.3): `copyText` is the only clipboard entry point. */
+  const copyTaskLink = async (task: ProjectTask) => {
+    const url = `${window.location.origin}${
+      window.location.pathname
+    }?task=${encodeURIComponent(task.task_id)}&tab=tasks`;
+    let ok = false;
+    try {
+      ok = await copyText(url);
+    } catch {
+      // Failures are reported through the toast only — never rethrown.
+      ok = false;
+    }
+    if (ok) message.success(t("common.copied"));
+    else message.error(t("common.copyFailed"));
+  };
+
+  /** Fixed 2-item menu (R-05): no write action, no "copy number". */
+  const cardMenuItems: MenuProps["items"] = [
+    { key: "open", label: t("common.cardMenuOpen") },
+    { key: "copy-link", label: t("common.cardMenuCopyLink") },
+  ];
 
   useEffect(() => {
     if (!timelineTaskId) return;
@@ -229,6 +385,9 @@ function Board({ projectId, tasks, canEdit, onChanged }: BoardProps) {
   const endDrag = () => {
     setDragTaskId(null);
     setOverStatus(null);
+    // Only *appends* a timestamp — the two resets above stay as they are
+    // (they carry the existing drag feedback, PLAN §4.5 · W29).
+    lastDragEndAtRef.current = Date.now();
   };
 
   const moveTask = async (task: ProjectTask, status: ProjectTaskStatus) => {
@@ -378,6 +537,38 @@ function Board({ projectId, tasks, canEdit, onChanged }: BoardProps) {
   const renderCard = (task: ProjectTask) => {
     const pending = pendingTaskId === task.task_id;
     const dragging = dragTaskId === task.task_id;
+    // Old caches may predate the never-null guarantee (B-20).
+    const tags = task.tags ?? [];
+    const { shown: shownTags, more: moreTags } = tagsPreview(tags);
+    const tier = priorityTier(task.priority);
+    const tierLabelKey = priorityLabelKey(tier);
+    // PLAN §4.1 / R-03: an out-of-range value is shown verbatim (never blank,
+    // never silently downgraded to "low"); only null / undefined become "—".
+    const priorityText =
+      task.priority === null || task.priority === undefined
+        ? "—"
+        : tierLabelKey
+        ? t(tierLabelKey)
+        : String(task.priority);
+    // Moved verbatim out of the deleted `CardMetadata` (custom fields, row ④).
+    const fields = (task.custom_fields ?? []).filter(
+      (field) =>
+        formatCustomFieldValue(field.value, field.type, timeZone) !== "",
+    );
+    const assigneeName = resolveAssigneeName(
+      nameByKey,
+      task.assignee_type,
+      task.assignee_id,
+    );
+    // B-03: both sides must be non-empty — either side empty ⇒ no block at all.
+    const hasAssignee =
+      Boolean(task.assignee_type) && Boolean(task.assignee_id);
+    const AssigneeIcon = assigneeIcon(task.assignee_type);
+    // Silent fallback (R-09 / R-10): type glyph + `type:#shortid`, never blank
+    // and never a literal `null:` / `undefined:` prefix.
+    const assigneeFallback = `${
+      task.assignee_type ? `${task.assignee_type}:` : ""
+    }${shortAssigneeId(task.assignee_id)}`;
     // PLAN §8.1-3: only an agent / team assignee has a runtime to dispatch to.
     const canDispatch =
       task.assignee_type === "agent" || task.assignee_type === "team";
@@ -391,35 +582,108 @@ function Board({ projectId, tasks, canEdit, onChanged }: BoardProps) {
     ]
       .filter(Boolean)
       .join(" ");
+    const handleTitleClick = () => {
+      // Swallow the click a drag may leave behind (§5.4 · B-29).
+      if (Date.now() - lastDragEndAtRef.current < 200) return;
+      openDetail(task.task_id);
+    };
+    const handleMenuClick: MenuProps["onClick"] = ({ key, domEvent }) => {
+      domEvent.stopPropagation();
+      if (key === "open") openDetail(task.task_id);
+      else if (key === "copy-link") void copyTaskLink(task);
+    };
     return (
       <div
         key={task.task_id}
         className={cardClass}
+        role="group"
         draggable={canEdit && !pending}
         onDragStart={(event) => handleCardDragStart(event, task)}
         onDragEnd={endDrag}
       >
-        <div className={styles.cardHeader}>
-          <Text strong className={styles.cardTitle}>
-            {task.title}
-          </Text>
-          <Tooltip title={t("projects.taskPriority")}>
-            <Tag className={styles.cardPriority}>{task.priority}</Tag>
-          </Tooltip>
+        {/* 行① 编号位：本轮唯一子节点 = ⋯（编号批次把编号 span 插到本行首）。 */}
+        <div className={styles.cardKey}>
+          <Dropdown
+            menu={{ items: cardMenuItems, onClick: handleMenuClick }}
+            trigger={["click"]}
+            placement="bottomRight"
+          >
+            <button
+              type="button"
+              className={styles.cardMenu}
+              data-testid="task-card-menu"
+              aria-label={t("common.more")}
+              draggable={false}
+              onClick={(event) => event.stopPropagation()}
+              onDragStart={(event) => {
+                // The card itself stays draggable; only this trigger is not.
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          </Dropdown>
         </div>
-        <div className={styles.cardMeta}>
-          {task.assignee_type && task.assignee_id ? (
-            <span className={styles.cardMetaItem}>
-              <User size={12} />
-              <Text type="secondary" className={styles.cardMetaText}>
-                {`${task.assignee_type}:${task.assignee_id}`}
-              </Text>
+        {/* 行② 标题（原生 button ⇒ Enter / Space 走原生语义）。 */}
+        <div className={styles.cardTitleRow}>
+          <button
+            type="button"
+            className={styles.cardTitleButton}
+            aria-label={cardAriaLabel(task.title)}
+            onClick={handleTitleClick}
+          >
+            {task.title}
+          </button>
+        </div>
+        {/* 行③ 标签：0 个整块不渲染；>3 个折成 +N（R-04）。 */}
+        {tags.length > 0 ? (
+          <div className={styles.cardChips} data-testid="task-card-chips">
+            {shownTags.map((tag) => (
+              <span key={tag.tag_id} className={styles.cardChip}>
+                <span
+                  className={styles.cardChipDot}
+                  style={{ background: tag.color || undefined }}
+                />
+                {tag.name}
+              </span>
+            ))}
+            {moreTags > 0 ? (
+              <Tooltip title={tags.map((tag) => tag.name).join(", ")}>
+                <span
+                  className={styles.cardChipMore}
+                  data-testid="task-card-chip-more"
+                >
+                  {`+${moreTags}`}
+                </span>
+              </Tooltip>
+            ) : null}
+          </div>
+        ) : null}
+        {/* 行④ 左：优先级柱 + 文案；中：日期与自定义字段；右：单主体位。 */}
+        <div className={styles.cardBottomRow}>
+          <span
+            className={styles.cardPriority}
+            data-testid="task-card-priority"
+          >
+            <span className={styles.cardPriorityBars} data-priority-bars>
+              {priorityBars(tier).map((on, index) => (
+                <span
+                  key={index}
+                  className={
+                    on
+                      ? `${styles.cardPriorityBar} ${styles.isOn}`
+                      : styles.cardPriorityBar
+                  }
+                />
+              ))}
             </span>
-          ) : null}
+            {priorityText}
+          </span>
           {task.start_at ? (
             <span className={styles.cardMetaItem}>
               <CalendarDays size={12} />
-              <Text type="secondary" className={styles.cardMetaText}>
+              <Text className={styles.cardMetaText}>
                 {formatServerDateTime(task.start_at, timeZone)}
               </Text>
             </span>
@@ -427,13 +691,46 @@ function Board({ projectId, tasks, canEdit, onChanged }: BoardProps) {
           {task.due_at ? (
             <span className={styles.cardMetaItem}>
               <CalendarDays size={12} />
-              <Text type="secondary" className={styles.cardMetaText}>
+              <Text className={styles.cardMetaText}>
                 {formatServerDateTime(task.due_at, timeZone)}
               </Text>
             </span>
           ) : null}
+          {fields.map((field) => (
+            <span key={field.field_id} className={styles.cardMetaItem}>
+              <Text className={styles.cardMetaText}>
+                {`${field.label}：${formatCustomFieldValue(
+                  field.value,
+                  field.type,
+                  timeZone,
+                )}`}
+              </Text>
+            </span>
+          ))}
+          {hasAssignee ? (
+            <span className={styles.cardOwnerAgent}>
+              <Avatar
+                size={28}
+                className={styles.cardAvatar}
+                data-testid="task-card-assignee-avatar"
+                icon={assigneeName ? undefined : <AssigneeIcon size={14} />}
+              >
+                {assigneeName ? assigneeName.charAt(0) : null}
+              </Avatar>
+              {isAgentLike(task.assignee_type) ? (
+                <span
+                  className={styles.cardAgentBadge}
+                  data-testid="task-card-agent-badge"
+                >
+                  <AssigneeIcon size={14} />
+                </span>
+              ) : null}
+              <span className={styles.cardAgentName}>
+                {assigneeName ?? assigneeFallback}
+              </span>
+            </span>
+          ) : null}
         </div>
-        <CardMetadata task={task} timeZone={timeZone} />
         <div className={styles.cardFooter}>
           {canEdit ? (
             <Select<ProjectTaskStatus>

@@ -75,7 +75,12 @@
     "copyErrorForOctop": "复制错误信息",
     "installLogEmpty": "（暂无安装日志）",
     "tokenCountPresets": "快速填写",
-    "tokenCountPreview": "约 {{label}} tokens（{{exact}}）"
+    "tokenCountPreview": "约 {{label}} tokens（{{exact}}）",
+    "cardMenuOpen": "打开详情",
+    "cardMenuCopyLink": "复制链接",
+    "cardPriorityLow": "低",
+    "cardPriorityMid": "中",
+    "cardPriorityHigh": "高"
   },
   "apiErrors": {
     "AUTH_FAILED": "认证失败。",

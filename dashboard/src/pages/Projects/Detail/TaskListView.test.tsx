@@ -29,6 +29,7 @@ vi.mock("@/utils/antdMessage", () => ({
 
 import { request } from "../../../api/request";
 import type {
+  ProjectMember,
   ProjectTask,
   ProjectTaskStatus,
 } from "../../../api/modules/projects";
@@ -40,6 +41,11 @@ import {
   STATUS_LABEL_KEYS,
 } from "../utils/taskStatus";
 import TaskListView, { TASK_LIST_COLUMN_KEYS } from "./TaskListView";
+/**
+ * CSS Modules 的类名是**哈希**（`_isOn_eba01a`），断言里不得硬编码 —— 从**同一个**
+ * 模块读回来，才能既判「亮格数」又不与哈希值耦合。
+ */
+import styles from "./TaskListView.module.less";
 
 const mockedRequest = vi.mocked(request);
 
@@ -134,10 +140,26 @@ function renderList(
   return { onOpenTask, view };
 }
 
-function mockTasks(rows: ProjectTask[]) {
+/**
+ * **允许的请求路径集合**（`AC-F1-3` · `B-12`）—— **恰**这三条：
+ *   ① `/projects/prj_1/tasks`   —— 数据源（`projectsApi.listTasks`，**恰 1 次**）
+ *   ② `/projects/prj_1/members` —— 显示名（`useProjectMembers`，**恰 1 次**，`B-12` 反 N+1）
+ *   ③ `/settings/timezone`      —— 服务器时区（既有，与数据面无关）
+ * 任何第四条路径（分页 / 新端点）都会让 `AC-F1-3` 失败。
+ */
+const ALLOWED_REQUEST_PATHS: readonly string[] = [
+  "/projects/prj_1/tasks",
+  "/projects/prj_1/members",
+  "/settings/timezone",
+];
+
+function mockTasks(rows: ProjectTask[], members: ProjectMember[] = []) {
   mockedRequest.mockImplementation(async (path: string) => {
     if (path === "/settings/timezone") return { timezone: "UTC" };
     if (path === "/projects/prj_1/tasks") return rows;
+    // `B-12`：显示名走**每块 1 次**的成员表读；不补这一支即抛
+    // `unexpected request`，被 hook 静默吞掉 ⇒ 兜底分支被误当成正常态。
+    if (path === "/projects/prj_1/members") return members;
     throw new Error(`unexpected request: ${path}`);
   });
 }
@@ -227,9 +249,14 @@ describe("TaskListView", () => {
       );
     expect(statusTag).toBeTruthy();
 
-    // Assignee is rendered as `assignee_type:assignee_id` (PLAN §9).
-    expect(screen.getByText("agent:agent01")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument();
+    // 负责人 = `assignee_type:短id`，短 id = `assignee_id` **末 6 位**（口径 = `SPEC · R-09`
+    // 「`type:#末 6 位`」）。本 fixture 的 `agent01` 是 7 位 ⇒ 末 6 位 = `gent01`；
+    // 成员表为空 ⇒ 走 R-09 兜底分支（不是旧口径 `type:整串`）。
+    expect(screen.getByText("agent:#gent01")).toBeInTheDocument();
+    // 判别性负向断言：旧口径「整串 id」必须已经消失。
+    expect(screen.queryByText("agent:agent01")).toBeNull();
+    // 优先级 = 3 柱 + 档位文案（`R-01`/`R-02`）：3 ⇒ 高；该格不再出现裸数字。
+    expect(screen.getByText("common.cardPriorityHigh")).toBeInTheDocument();
     expect(screen.getByText("urgent")).toBeInTheDocument();
 
     // Dates: formatServerDateTime(epochSec, serverTimeZone), never toLocaleString.
@@ -480,17 +507,28 @@ describe("F1 按状态分区（PLAN §1）", () => {
     mockTasks([task({ task_id: "tsk_1", title: "Alpha" })]);
     renderList();
     await screen.findByTestId("task-row-title-tsk_1");
+    // 等成员表读**落地**（不是只发出）：`B-12` 的「恰 1 次」才是终态计数。
+    await waitFor(() => {
+      expect(
+        mockedRequest.mock.calls.filter(
+          ([path]) => path === "/projects/prj_1/members",
+        ),
+      ).toHaveLength(1);
+    });
 
     const paths = mockedRequest.mock.calls.map(([path]) => path);
     // 恰一次 listTasks（无分页、无新端点）。
     expect(
       paths.filter((path) => path === "/projects/prj_1/tasks"),
     ).toHaveLength(1);
+    // 成员表也**恰一次**（`B-12`：显示名每块 1 次，**不是**每行 1 次）。
     expect(
-      paths.filter(
-        (path) =>
-          path !== "/projects/prj_1/tasks" && path !== "/settings/timezone",
-      ),
+      paths.filter((path) => path === "/projects/prj_1/members"),
+    ).toHaveLength(1);
+    // 允许路径集合（见文件顶部 `ALLOWED_REQUEST_PATHS`，已含 `/projects/prj_1/members`）
+    // 之外的路径 = ∅。
+    expect(
+      paths.filter((path) => !ALLOWED_REQUEST_PATHS.includes(path)),
     ).toEqual([]);
   });
 
@@ -723,5 +761,364 @@ describe("G1 分区卡片 + G4 标题可点（PLAN §4.1 FIND-11）", () => {
     const edit = screen.getByTestId("task-row-edit-tsk_9");
     await userEvent.click(edit);
     expect(onEditTask).toHaveBeenCalledWith("tsk_9");
+  });
+});
+
+describe("AC-14 卡面同源（列表视图 · PLAN §2.3 / SPEC R-01·R-02·R-04·R-09）", () => {
+  const viewSource = readFileSync(
+    resolve(__dirname, "TaskListView.tsx"),
+    "utf8",
+  );
+
+  /** `Board.tsx` 导出的同一批映射函数（`AC-14`「同源」= 同一实现 + 同一批文案键）。 */
+  const BOARD_MAPPING_SYMBOLS = [
+    "isAgentLike",
+    "memberKey",
+    "priorityBars",
+    "priorityLabelKey",
+    "priorityTier",
+    "resolveAssigneeName",
+    "shortAssigneeId",
+    "tagsPreview",
+  ];
+
+  /** 某任务行的优先级格（`task-card-priority`）。 */
+  function priorityCell(taskId: string): HTMLElement {
+    return within(screen.getByTestId(`task-row-${taskId}`)).getByTestId(
+      "task-card-priority",
+    );
+  }
+
+  /** 优先级柱：总数恒 3；亮格 = 带同一个 `styles.isOn` 的柱。 */
+  function barsOf(cell: HTMLElement): { total: number; lit: number } {
+    const bars = Array.from(
+      cell.querySelectorAll<HTMLElement>("[data-priority-bars] > *"),
+    );
+    return {
+      total: bars.length,
+      lit: bars.filter((bar) => bar.classList.contains(styles.isOn)).length,
+    };
+  }
+
+  /** 某个任务行（负责人的头像 / 徽标 / 名称与标签 chips 都在行内）。 */
+  function taskRow(taskId: string) {
+    return within(screen.getByTestId(`task-row-${taskId}`));
+  }
+
+  function member(
+    subject_type: ProjectMember["subject_type"],
+    subject_id: string,
+    name: string | null,
+  ): ProjectMember {
+    return {
+      subject_type,
+      subject_id,
+      user_id: null,
+      role: "member",
+      created_at: 0,
+      name,
+    };
+  }
+
+  it("AC-14 同源：四类元素复用 Board 的 8 个映射函数，不另立第二套", () => {
+    // 具名导入同一实现（不是本地副本、不是第二套口径）。
+    expect(viewSource).toContain('from "./Board"');
+    for (const symbol of BOARD_MAPPING_SYMBOLS) {
+      expect(viewSource).toMatch(
+        new RegExp(
+          `import\\s*\\{[\\s\\S]*?\\b${symbol}\\b[\\s\\S]*?\\}\\s*from "\\./Board"`,
+        ),
+      );
+      // 本地**不得**再声明一份：第二套实现正是 `AC-14` 要禁止的。
+      expect(viewSource).not.toContain(`function ${symbol}`);
+      expect(viewSource).not.toContain(`const ${symbol}`);
+    }
+  });
+
+  it("AC-14 标签同源：≤3 chips + `+N`，`+N` 的 Tooltip 列出**全部**标签名（FIND-11 / S-6）", async () => {
+    const four = ["alpha", "beta", "gamma", "delta"].map((name, index) => ({
+      tag_id: `tag_${index}`,
+      name,
+      color: "#ff0000",
+    }));
+
+    mockTasks([
+      task({ task_id: "tsk_tags4", title: "Four tags", tags: four }),
+      task({
+        task_id: "tsk_tags3",
+        title: "Three tags",
+        tags: four.slice(0, 3),
+        sort_order: 1,
+      }),
+      task({ task_id: "tsk_tags0", title: "No tags", tags: [], sort_order: 2 }),
+    ]);
+    renderList();
+    await screen.findByTestId("task-row-tsk_tags4");
+
+    // 4 个标签 ⇒ chips 容器存在 · 前 3 个成 chip · `+N` = `+1`（`R-04` 上限 3）。
+    const fourTags = taskRow("tsk_tags4");
+    const chips = fourTags.getByTestId("task-card-chips");
+    expect(chips).toBeInTheDocument();
+    expect(
+      Array.from(chips.querySelectorAll(`.${styles.cardChip}`)).map(
+        (chip) => chip.textContent,
+      ),
+    ).toEqual(["alpha", "beta", "gamma"]);
+    const more = fourTags.getByTestId("task-card-chip-more");
+    expect(more).toHaveTextContent("+1");
+
+    // Tooltip 列**全部** 4 个标签名 —— 含已显示的那 3 个；只列剩余项（`delta`）即失败。
+    await userEvent.hover(more);
+    await waitFor(() => {
+      expect(document.querySelector(".ant-tooltip-inner")).toBeTruthy();
+    });
+    const tip = document.querySelector(".ant-tooltip-inner") as HTMLElement;
+    for (const name of ["alpha", "beta", "gamma", "delta"]) {
+      expect(tip).toHaveTextContent(name);
+    }
+
+    // 3 个标签 ⇒ 无 `+N`；0 个标签 ⇒ chips 整块不渲染（`B-10` / `B-01`）。
+    expect(
+      taskRow("tsk_tags3").queryByTestId("task-card-chip-more"),
+    ).toBeNull();
+    expect(
+      taskRow("tsk_tags3").getByTestId("task-card-chips"),
+    ).toBeInTheDocument();
+    expect(taskRow("tsk_tags0").queryByTestId("task-card-chips")).toBeNull();
+  });
+
+  it("AC-14 优先级同源：3 柱 + 档位文案键（低/中/高 · 未知值 `String(p)` + 0 格亮）", async () => {
+    mockTasks([
+      task({ task_id: "tsk_p_low", title: "Low", priority: 1 }),
+      task({
+        task_id: "tsk_p_neg1",
+        title: "Negative one",
+        priority: -1,
+        sort_order: 1,
+      }),
+      task({
+        task_id: "tsk_p_neg99",
+        title: "Negative 99",
+        priority: -99,
+        sort_order: 2,
+      }),
+      task({ task_id: "tsk_p_mid", title: "Mid", priority: 2, sort_order: 3 }),
+      task({
+        task_id: "tsk_p_high",
+        title: "High",
+        priority: 3,
+        sort_order: 4,
+      }),
+      task({
+        task_id: "tsk_p_float",
+        title: "Float",
+        priority: 1.5,
+        sort_order: 5,
+      }),
+      task({
+        task_id: "tsk_p_nan",
+        title: "Not a number",
+        priority: Number.NaN,
+        sort_order: 6,
+      }),
+      task({
+        task_id: "tsk_p_null",
+        title: "Null priority",
+        priority: null as unknown as number,
+        sort_order: 7,
+      }),
+      task({
+        task_id: "tsk_p_undef",
+        title: "Undefined priority",
+        priority: undefined as unknown as number,
+        sort_order: 8,
+      }),
+      task({
+        task_id: "tsk_p_str",
+        title: "String priority",
+        priority: "abc" as unknown as number,
+        sort_order: 9,
+      }),
+    ]);
+    renderList();
+    await screen.findByTestId("task-row-tsk_p_low");
+
+    // 整数 `≤1`（含 `-1` / `-99`）⇒ **低**（1 格亮）—— 不得按未知值处理（`B-02` 反向格）。
+    for (const id of ["tsk_p_low", "tsk_p_neg1", "tsk_p_neg99"]) {
+      const cell = priorityCell(id);
+      expect(barsOf(cell)).toEqual({ total: 3, lit: 1 });
+      expect(cell).toHaveTextContent("common.cardPriorityLow");
+    }
+    // `=== 2` ⇒ 中（2 格亮）；`≥3` ⇒ 高（3 格亮）。
+    expect(barsOf(priorityCell("tsk_p_mid"))).toEqual({ total: 3, lit: 2 });
+    expect(priorityCell("tsk_p_mid")).toHaveTextContent(
+      "common.cardPriorityMid",
+    );
+    expect(barsOf(priorityCell("tsk_p_high"))).toEqual({ total: 3, lit: 3 });
+    expect(priorityCell("tsk_p_high")).toHaveTextContent(
+      "common.cardPriorityHigh",
+    );
+
+    // 未知值 5 格（`R-03`）：原值 `String(p)` · **0 格亮** · 非空文本 · 不出现 `undefined` / `null`。
+    const unknown: Array<[string, string]> = [
+      ["tsk_p_float", "1.5"],
+      // ★ 全文**唯一**允许出现 `NaN` 字样的格（`B-02`：即 `String(NaN)`）。
+      ["tsk_p_nan", "NaN"],
+      ["tsk_p_null", "—"],
+      ["tsk_p_undef", "—"],
+      ["tsk_p_str", "abc"],
+    ];
+    for (const [id, text] of unknown) {
+      const cell = priorityCell(id);
+      expect(barsOf(cell)).toEqual({ total: 3, lit: 0 });
+      expect(cell.textContent).toContain(text);
+      expect((cell.textContent ?? "").trim()).not.toBe("");
+      expect(cell.textContent).not.toContain("undefined");
+      expect(cell.textContent).not.toContain("null");
+    }
+  });
+
+  it("AC-14 头像 / Agent 徽标同源：命中成员 ⇒ 首字母 + 名称；仅 `agent`/`team` 有徽标", async () => {
+    mockTasks(
+      [
+        task({
+          task_id: "tsk_a_agent",
+          title: "Agent assignee",
+          assignee_type: "agent",
+          assignee_id: "agent01",
+        }),
+        task({
+          task_id: "tsk_a_team",
+          title: "Team assignee",
+          assignee_type: "team",
+          assignee_id: "team01",
+          sort_order: 1,
+        }),
+        task({
+          task_id: "tsk_a_user",
+          title: "User assignee",
+          assignee_type: "user",
+          assignee_id: "3",
+          sort_order: 2,
+        }),
+        task({
+          task_id: "tsk_a_unknown",
+          title: "Unknown assignee",
+          assignee_type: "bot",
+          assignee_id: "ghost_1",
+          sort_order: 3,
+        }),
+      ],
+      [
+        member("agent", "agent01", "Worker One"),
+        member("team", "team01", "Squad"),
+        member("user", "3", "张三"),
+      ],
+    );
+    renderList();
+    await screen.findByTestId("task-row-tsk_a_agent");
+
+    // 命中成员 ⇒ 头像 = 名称**首字母**（不再退化为类型图标），名称文本 = `member.name`。
+    await waitFor(() => {
+      expect(
+        taskRow("tsk_a_agent").getByTestId("task-card-assignee-avatar"),
+      ).toHaveTextContent("W");
+    });
+    expect(
+      taskRow("tsk_a_agent")
+        .getByTestId("task-card-assignee-avatar")
+        .querySelector("svg"),
+    ).toBeNull();
+    expect(taskRow("tsk_a_agent").getByText("Worker One")).toBeInTheDocument();
+    expect(
+      taskRow("tsk_a_user").getByTestId("task-card-assignee-avatar"),
+    ).toHaveTextContent("张");
+
+    // 徽标**仅** `agent` / `team`（`isAgentLike`）：`user` 与未知类型都没有。
+    expect(
+      taskRow("tsk_a_agent").getByTestId("task-card-agent-badge"),
+    ).toBeInTheDocument();
+    expect(
+      taskRow("tsk_a_team").getByTestId("task-card-agent-badge"),
+    ).toBeInTheDocument();
+    expect(
+      taskRow("tsk_a_user").queryByTestId("task-card-agent-badge"),
+    ).toBeNull();
+    expect(
+      taskRow("tsk_a_unknown").queryByTestId("task-card-agent-badge"),
+    ).toBeNull();
+  });
+
+  it("AC-14 兜底同源：成员表未命中 ⇒ 类型图标 + `type:#末 6 位`，页面无 undefined/NaN/null", async () => {
+    mockTasks(
+      [
+        task({
+          task_id: "tsk_f_agent",
+          title: "Agent fallback",
+          assignee_type: "agent",
+          assignee_id: "abcdef123456",
+        }),
+        task({
+          task_id: "tsk_f_user",
+          title: "User fallback",
+          assignee_type: "user",
+          assignee_id: "3",
+          sort_order: 1,
+        }),
+        task({
+          task_id: "tsk_f_unknown",
+          title: "Unknown fallback",
+          assignee_type: "bot",
+          assignee_id: "ghost_1",
+          sort_order: 2,
+        }),
+      ],
+      // 成员表**非空**但主键不匹配 ⇒ 走 R-09 兜底（排除「表为空」这一退化解释）。
+      [member("agent", "someone_else", "Other")],
+    );
+    const { view } = renderList();
+    await screen.findByTestId("task-row-tsk_f_agent");
+
+    const expected: Array<[string, string, string]> = [
+      // `abcdef123456` ⇒ 末 6 位 `123456`；`ghost_1`（7 位）⇒ 末 6 位 `host_1`。
+      ["tsk_f_agent", "agent:#123456", "lucide-bot"],
+      ["tsk_f_user", "user:#3", "lucide-user"],
+      ["tsk_f_unknown", "bot:#host_1", "lucide-circle-question-mark"],
+    ];
+    for (const [id, text, icon] of expected) {
+      const row = taskRow(id);
+      const avatar = row.getByTestId("task-card-assignee-avatar");
+      // 兜底 = **类型图标**（不是首字母、不是空头像）+ `type:#短id` 文本。
+      expect(avatar.querySelector(`svg.${icon}`)).not.toBeNull();
+      await waitFor(() => {
+        expect(row.getByText(text)).toBeInTheDocument();
+      });
+      expect(row.getByTestId("task-card-assignee-avatar")).toBeInTheDocument();
+    }
+
+    // `B-17`（显示名族）：页面 HTML 不含 `undefined` / `NaN` / `null`。
+    for (const needle of ["undefined", "NaN", "null"]) {
+      expect(view.container.innerHTML).not.toContain(needle);
+    }
+  });
+
+  it('AC-14 键盘可达：标题是原生 `<button type="button">` ⇒ Enter / Space 各触发**恰 1 次**', async () => {
+    mockTasks([task({ task_id: "tsk_k", title: "Keyboard reachable" })]);
+    const { onOpenTask } = renderList();
+    const title = await screen.findByTestId("task-row-title-tsk_k");
+
+    // 原生 button 语义（不是 `div` + `role` / `div` + 手搓 keydown）。
+    expect(title.tagName).toBe("BUTTON");
+    expect(title).toHaveAttribute("type", "button");
+
+    title.focus();
+    expect(document.activeElement).toBe(title);
+    await userEvent.keyboard("{Enter}");
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).toHaveBeenLastCalledWith("tsk_k");
+
+    await userEvent.keyboard(" ");
+    expect(onOpenTask).toHaveBeenCalledTimes(2);
+    expect(onOpenTask).toHaveBeenLastCalledWith("tsk_k");
   });
 });

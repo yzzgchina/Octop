@@ -32,11 +32,11 @@
 
 .column {
   display: flex;
-  flex: 0 0 240px;
+  flex: 0 0 272px;
   flex-direction: column;
-  width: 240px;
+  width: 272px;
   max-height: 560px;
-  padding: 8px;
+  padding: 12px;
   border: 1px solid var(--fn-border-primary);
   border-radius: var(--fn-radius-lg, 12px);
   background: var(--fn-bg-group);
@@ -66,10 +66,6 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
-
-  :global(.ant-tag) {
-    margin-inline-end: 0;
-  }
 }
 
 .columnCount {
@@ -94,18 +90,49 @@
 }
 
 .card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border: 1px solid var(--fn-border-primary);
-  border-radius: var(--fn-radius-md, 8px);
+  /* 卡片本地变量（PLAN §4.4 · 样板 proto.css @1260-1378 逐字取值）。
+     `--fn-proj-*` 在仓内不存在，故按 L2 裁定本地声明；将来回填同名同值。 */
+  --card-pad: 14px;
+  --card-radius: 14px;
+  --card-rhythm-title: 6px;
+  --card-rhythm-chips: 10px;
+  --card-rhythm-bottom: 12px;
+  --card-fs-title: 14px;
+  --card-fs-chip: 11px;
+  --card-fs-meta: 12px;
+  --card-chip-radius: 8px;
+  --card-chip-pad: 1px 6px;
+  --card-chip-dot: 3px;
+  --card-bar-w: 3px;
+  --card-bar-gap: 2px;
+  --card-bar-h: 12px;
+  --card-bar-radius: 1px;
+  --card-avatar: 28px;
+  --card-badge: 24px;
+  --card-menu: 24px;
+
+  display: block;
+  padding: var(--card-pad);
+  border: 1px solid transparent;
+  border-radius: var(--card-radius);
   background: var(--fn-bg-card);
-  box-shadow: var(--fn-shadow-xs);
+  box-shadow: var(--fn-shadow-sm);
+  transition:
+    box-shadow var(--fn-transition-fast),
+    border-color var(--fn-transition-fast);
+
+  &:hover {
+    box-shadow: var(--fn-shadow-md);
+  }
 
   &[draggable="true"] {
     cursor: grab;
   }
+}
+
+/* 深色卡片面与列底仅 1.09:1 ⇒ 边框是深色下唯一的边界手段（PLAN §4.3 · F4）。 */
+:global(html[data-theme="dark"]) .card {
+  border-color: var(--fn-border-secondary);
 }
 
 .cardDragging {
@@ -117,38 +144,196 @@
   pointer-events: none;
 }
 
-.cardHeader {
+/* 行① 编号位容器：本轮唯一子节点是 ⋯（编号批次把编号插到本行首）。 */
+.cardKey {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--card-menu);
+}
+
+/* 行② 标题行：标题是原生 button（Enter / Space 走原生语义）。 */
+.cardTitleRow {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 8px;
+  margin-top: var(--card-rhythm-title);
 }
 
-.cardTitle {
-  font-size: 13px;
+.cardTitleButton {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--card-fs-title);
+  font-weight: 600;
+  line-height: 20px;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   overflow-wrap: anywhere;
+
+  &:focus-visible {
+    outline: 2px solid var(--fn-color-brand);
+    outline-offset: 1px;
+  }
 }
 
-.cardPriority {
-  margin-inline-end: 0;
-  font-size: 11px;
-}
-
-.cardMeta {
+/* 行③ 标签 chips（≤3 + 「+N」，R-04）。 */
+.cardChips {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 6px;
+  margin-top: var(--card-rhythm-chips);
+}
+
+.cardChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--card-chip-pad);
+  border-radius: var(--card-chip-radius);
+  background: var(--fn-bg-tertiary);
+  font-size: var(--card-fs-chip);
+  color: var(--fn-text-secondary);
+}
+
+.cardChipDot {
+  width: var(--card-chip-dot);
+  height: var(--card-chip-dot);
+  border-radius: var(--fn-radius-full);
+  background: var(--fn-text-secondary);
+}
+
+.cardChipMore {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--card-chip-pad);
+  border-radius: var(--card-chip-radius);
+  background: var(--fn-bg-tertiary);
+  font-size: var(--card-fs-chip);
+  color: var(--fn-text-secondary);
+  cursor: default;
+}
+
+/* 行④ 底部行：左 = 优先级，中 = 日期与自定义字段，右 = 单主体位。 */
+.cardBottomRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: var(--card-rhythm-bottom);
+}
+
+/* 单主体位（R-08：不渲染连接符、不编造第二主体）。 */
+.cardOwnerAgent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+}
+
+.cardAvatar {
+  flex-shrink: 0;
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+}
+
+.cardAgentBadge {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: var(--card-badge);
+  height: var(--card-badge);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-full);
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+}
+
+.cardAgentName {
+  min-width: 0;
+  font-size: var(--card-fs-meta);
+  color: var(--fn-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ⋯ 触发器（菜单走 antd Dropdown 的 Portal，无手写层级声明）。 */
+.cardMenu {
+  display: grid;
+  place-items: center;
+  width: var(--card-menu);
+  height: var(--card-menu);
+  margin-inline-start: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--fn-radius-sm);
+  background: none;
+  color: var(--fn-text-secondary);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--fn-bg-hover);
+    color: var(--fn-text-primary);
+  }
+}
+
+/* 行④ 左组：3 根柱 + 档位文案（PLAN §4.1 / §4.3）。 */
+.cardPriority {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--card-fs-meta);
+  color: var(--fn-text-secondary);
+}
+
+.cardPriorityBars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: var(--card-bar-gap);
+  height: var(--card-bar-h);
+}
+
+.cardPriorityBar {
+  width: var(--card-bar-w);
+  border-radius: var(--card-bar-radius);
+  background: var(--fn-border-input);
+
+  &:nth-child(1) {
+    height: 5px;
+  }
+
+  &:nth-child(2) {
+    height: 8px;
+  }
+
+  &:nth-child(3) {
+    height: 12px;
+  }
+}
+
+.isOn {
+  background: var(--fn-color-warning);
 }
 
 .cardMetaItem {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
 }
 
 .cardMetaText {
   font-size: 12px;
+  color: var(--fn-text-secondary);
 }
 
 .cardFooter {
@@ -156,10 +341,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-
-  :global(.ant-tag) {
-    margin-inline-end: 0;
-  }
 }
 
 .cardStatusSelect {
@@ -196,19 +377,6 @@
 
 .timelineMeta {
   font-size: 12px;
-}
-
-/* Tags + custom-field values under a card's meta row (T-FE-MODAL). */
-.cardMetadata {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 6px;
-}
-
-.cardTag {
-  margin-inline-end: 0;
-  font-size: 11px;
 }
 
 /* Card action cluster (status / dispatch / timeline). */
