@@ -11,6 +11,7 @@ from fastapi import Depends, Header, Query, Request
 
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import PERMISSIONS, user_has_permission
+from octop.infra.users.tokens import sign_token as sign_token  # re-export for API callers
 
 if TYPE_CHECKING:
     from octop.infra.server import OctopServer
@@ -23,25 +24,6 @@ class InvalidToken(Exception): ...
 
 
 class TokenExpired(InvalidToken): ...
-
-
-def sign_token(
-    secret: bytes,
-    *,
-    sub: int,
-    uname: str,
-    role: str,
-    ttl_seconds: int = 86400,
-) -> str:
-    now = int(time.time())
-    payload = {
-        "sub": str(sub),
-        "uname": uname,
-        "role": role,
-        "iat": now,
-        "exp": now + ttl_seconds,
-    }
-    return jwt.encode(payload, secret, algorithm="HS256")
 
 
 def decode_token(secret: bytes, token: str) -> dict[str, Any]:

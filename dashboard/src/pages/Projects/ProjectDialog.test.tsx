@@ -11,6 +11,11 @@ vi.mock("../../api/request", () => ({
   request: vi.fn(),
   requestBlob: vi.fn(),
   requestUpload: vi.fn(),
+  // Upstream v1.0.2b5 added ``bridgeAgentHeaders`` to ``api/request`` and made
+  // ``knowledgeBasesApi.list`` pass its result as ``headers`` — a mock factory
+  // that omits the export makes every caller throw. (Upstream shipped this test
+  // in that broken state; repaired here so the merged tree stays green.)
+  bridgeAgentHeaders: vi.fn(() => undefined),
 }));
 
 const messageErrorMock = vi.fn();

@@ -1,6 +1,6 @@
 """T-43 —— ``project_artifacts.kb_document_id`` 的**写入方**（repo 侧）。
 
-本卡收口的是「**仅有读取位**」的字段：列在 `019_projects.sql` 就有，T-39 的 `kb` source 也
+本卡收口的是「**仅有读取位**」的字段：列在 `020_projects.sql` 就有，T-39 的 `kb` source 也
 已经在读它，但**没人写**（INSERT 恒 NULL，`ArtifactRow` 都没映射）⇒ 读回来永远是空。
 
 这里测 repo 侧的三件事：① 行**暴露**该列（NULL 与有值都读得出）；② 写入方**幂等**且只动这一列；

@@ -172,7 +172,7 @@ cd dashboard; npx tsc -b
 
 | 提交 | 内容 |
 |---|---|
-| `7858e1b5` | 项目域迁移（`019_projects.{sql,pg.sql}`，10 张表） |
+| `7858e1b5` | 项目域迁移（当时编号 **019**，上游 `v1.0.2b5` 对齐后现为 `020_projects.{sql,pg.sql}`；10 张表） |
 | `3d7c3b79` | repo 层：`repos/projects.py`、`repos/project_tasks.py` |
 | `2f07aaa6` | `ProjectService`：KB 生命周期 + 项目状态机 + §4.6 权限矩阵 |
 | `c3ac257c` | 任务 CRUD + 任务状态机 + `timeline_events` |
@@ -354,7 +354,7 @@ src/octop/infra/projects/             领域层
     discussion.py     ProjectDiscussion：讨论线（权限全部委托 ProjectService）
 src/octop/infra/db/repos/             SQL 层（仅 SQL，无业务规则）
     projects.py / project_tasks.py / project_content.py
-src/octop/infra/db/migrations/        019_projects.{sql,pg.sql}
+src/octop/infra/db/migrations/        020_projects.{sql,pg.sql}   # 019 归上游 bridge_connections
 dashboard/src/pages/Projects/         前端页面（源码）
 ```
 

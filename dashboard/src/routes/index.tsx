@@ -10,6 +10,7 @@ const KnowledgeBasesPage = lazy(() => import("../pages/KnowledgeBases"));
 const ProjectsPage = lazy(() => import("../pages/Projects"));
 const TeamRunDetailPage = lazy(() => import("../pages/Teams/RunDetail"));
 const ProjectDetailPage = lazy(() => import("../pages/Projects/Detail"));
+const BridgePage = lazy(() => import("../pages/Settings/Bridge"));
 const PersonalizationPage = lazy(
   () => import("../pages/Agent/Personalization"),
 );
@@ -63,6 +64,7 @@ export const pathToKey: Record<string, string> = {
   "/knowledge-bases": "knowledge-bases",
   "/projects": "projects",
   "/teams/runs": "experts",
+  "/bridge": "bridge",
   "/personalization": "personalization",
   "/personalization/skills": "personalization",
   "/personalization/tools": "personalization",
@@ -168,6 +170,7 @@ export const routeConfigs: RouteConfig[] = [
   { path: "/projects", element: <ProjectsPage /> },
   { path: "/projects/:projectId", element: <ProjectDetailPage /> },
   { path: "/teams/runs/:runId", element: <TeamRunDetailRoute /> },
+  { path: "/bridge", element: <BridgePage /> },
   {
     path: "/personalization/acp",
     element: <RedirectPreserveSearch to="/acp" />,

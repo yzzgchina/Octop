@@ -157,6 +157,12 @@ export interface TestModelDirectRequest {
   headers?: Record<string, string>;
 }
 
+export interface OllamaServiceStatus {
+  enabled: boolean;
+  running: boolean;
+  models_dir: string;
+}
+
 export interface OllamaDownloadTaskResponse {
   task_id: string;
   status: "pending" | "downloading" | "completed" | "failed" | "cancelled";

@@ -708,7 +708,7 @@ def test_the_author_check_matches_both_type_and_id(
     """M5: the same numeric id under a different ``author_type`` is not the author.
 
     Matching on ``author_id`` alone would let an agent-authored row be deleted by
-    the user whose id happens to equal the agent id (019_projects.sql @73/@74).
+    the user whose id happens to equal the agent id (020_projects.sql @73/@74).
     """
     # The *attacker* must be a plain member: SPEC P1 lets the owner and a platform
     # admin delete anyone's comment, so the author check is only observable for a

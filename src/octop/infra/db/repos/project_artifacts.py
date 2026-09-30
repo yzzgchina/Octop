@@ -1,14 +1,14 @@
 """``project_artifacts`` rows — the single writer for project file metadata.
 
-The table predates this feature (migration 019); migration 020 added ``size`` and
+The table predates this feature (migration 020); migration 021 added ``size`` and
 ``mime``. Project attachments reuse it with ``kind='attachment'``: ``task_id``
 NULL means *pending* (uploaded from the create-task dialog before the task
 exists), a non-NULL ``task_id`` means bound. No new table, no status column.
 
 ── 列的血缘（**别把它当成"025 加了三列"**）────────────────────────────────────
 
-* ``owner_role`` / ``phase`` —— 由 **025** 加（`025_team_runs.sql @103-104`、`.pg.sql @100-101`）。
-* ``version`` —— **019 既有**（`019_projects.sql @149` ：``version INTEGER NOT NULL DEFAULT 1``）。
+* ``owner_role`` / ``phase`` —— 由 **026** 加（`026_team_runs.sql @103-104`、`.pg.sql @100-101`）。
+* ``version`` —— **020 既有**（`020_projects.sql @149` ：``version INTEGER NOT NULL DEFAULT 1``）。
   本模块此前只把它硬编码成 ``1``、且不往 :class:`ArtifactRow` 上映射 ⇒ 它一直是**仅有写入位**
   （一个恒为 1、无人读的常量）。本次把它**读出来**并允许调用方写值。
 

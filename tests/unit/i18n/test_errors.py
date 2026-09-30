@@ -156,7 +156,9 @@ def test_dashboard_chat_labels_are_paired_and_localized():
     en = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
     zh = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
     assert set(en["chat"]) == set(zh["chat"])
-    assert len(zh["chat"]) == 211
+    # 213 = 211 + the two chat keys upstream v1.0.2b5 added (`remoteExpert`,
+    # `expertRemoteBadge`); en and zh both moved, so parity still holds.
+    assert len(zh["chat"]) == 213
     assert zh["chat"]["sectionPinned"] == "置顶"
     assert zh["chat"]["sectionActive"] == "会话"
     assert zh["chat"]["sectionUnused"] == "未使用"
@@ -509,7 +511,9 @@ def test_no_duplicate_keys_inside_any_dashboard_object():
         # exists to catch a duplicated *top-level block* from concurrent writers; an
         # intentional new namespace moves the number on purpose. Whoever adds the next
         # namespace bumps it again (and says so).
-        assert len(data) == 82 and len(data["chat"]) == 211, locale
+        # `chat` 211 -> 213: upstream v1.0.2b5 added `remoteExpert` / `expertRemoteBadge`
+        # (both locales) without touching this fork-only guard.
+        assert len(data) == 82 and len(data["chat"]) == 213, locale
 
 
 def test_the_projects_block_is_written_once():

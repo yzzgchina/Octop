@@ -186,6 +186,9 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
   if (pathname === "/projects" || pathname.startsWith("/projects/")) {
     return PERM.projects;
   }
+  if (pathname === "/bridge" || pathname.startsWith("/bridge/")) {
+    return null;
+  }
   if (pathname === "/remote-desktop/desktop") {
     return PERM.desktop;
   }

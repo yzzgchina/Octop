@@ -12,6 +12,7 @@ import {
   Users as UsersIcon,
   Activity,
   Share2,
+  Cloudy,
   Sparkles,
   Puzzle,
   Package,
@@ -59,6 +60,7 @@ export const SIDEBAR_NAV_KEYS = [
   "skill-packages",
   "knowledge-bases",
   "projects",
+  "bridge",
   "workbench",
   "remote-desktop",
   "acp",
@@ -113,6 +115,7 @@ export const SIDEBAR_GROUPED_NAV_KEYS = [
   "skill-packages",
   "knowledge-bases",
   "projects",
+  "bridge",
   "workbench",
   "remote-desktop",
   "acp",
@@ -214,6 +217,14 @@ export function buildNavSections(
       labelKey: "nav.projects",
     });
   }
+  // User-scoped remote Octop links — always available (like personalization).
+  settingsItems.push({
+    key: "bridge",
+    path: "/bridge",
+    icon: <Cloudy size={iconSize} strokeWidth={iconStroke} />,
+    labelKey: "nav.bridge",
+    badge: "Beta",
+  });
   if (settingsItems.length > 0) {
     sections.push({
       id: "settings",

@@ -943,7 +943,7 @@ def epoch_of(attempt_id: object) -> str | None:
     """Epoch prefix of an attempt token (``<epoch>.<token>``), or ``None``.
 
     ``attempt_id`` is free ``TEXT`` with no format validation
-    (``migrations/025_team_runs.sql`` @97), which is what lets C-2 ride on the
+    (``migrations/026_team_runs.sql`` @97), which is what lets C-2 ride on the
     existing column with zero migration. A token without a ``.`` is its own epoch.
     """
     if not attempt_id:
@@ -1038,7 +1038,7 @@ def settle_tasks(
     against ``repos/project_tasks.py`` · ``update`` @362–437, which applies no
     transition table: ``status`` flows straight into ``optional_updates``, no
     ``CHECK`` constraint exists on ``project_tasks.status``
-    (``migrations/019_projects.sql``), and ``TASK_STATUSES`` @33 is a declaration,
+    (``migrations/020_projects.sql``), and ``TASK_STATUSES`` @33 is a declaration,
     not a guard. Terminal tasks (``done`` / ``cancelled``) are **left verbatim**:
     not rewritten, not re-dispatched, not reported as settled.
 

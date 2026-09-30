@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.0.3b2] - 2026-09-30
+
+> **本版基线** = `v1.0.2b5` + 本仓集成线（原 `1.0.3b1`）。上游 `v1.0.2b4` / `v1.0.2b5` 的 release 提交已全部并入。
+
+### 变更
+
+- **与上游 `v1.0.2b5` 对齐**：并入上游 b4 + b5 的 release 提交（Octop↔Octop 云端桥接、账号自定义侧栏与角色模板 id、内置助手产品问答、Ollama 下载目录、移动端采集与 CSP / Langfuse / 备份导入等修复）
+- **迁移重编号（019–025 → 020–026）**：本线项目域 / 评论 / 团队 run 的 7 个迁移整体后移到上游 `019_bridge_connections` 之后 —— `019_projects` → `020_projects`、`020_project_task_metadata` → `021_project_task_metadata`、`021_project_config` → `022_project_config`、`022_project_comment_concluded_by` → `023_project_comment_concluded_by`、`023_comment_edit_delete_attachments` → `024_comment_edit_delete_attachments`、`024_comment_mentions` → `025_comment_mentions`、`025_team_runs` → `026_team_runs`。`.sql` / `.pg.sql` 成对改名，文件内自述编号同步，schema 水位断言 `25` → `26`
+
 ## [1.0.3b1] - 2026-09-30
 
 > **本版基线** = `v1.0.2b3` + 72 个提交（本仓集成线）。**不含**上游 `v1.0.2b4` / `v1.0.2b5` 的 release 提交；
@@ -29,6 +38,35 @@
 ### 变更
 
 - 前端门禁（`lint-frontend` / `test-frontend`）纳入 `make all` 与 pre-commit 钩子；钩子实际执行 `make precommit`（`AGENTS.md` / `Makefile` 已纠正「钩子跑 `make all`」的不实描述）
+
+## [1.0.2b5] - 2026-09-29
+
+### 新增
+- Octop↔Octop 云端桥接，经隧道使用远程专家
+- 内置助手可回答产品与使用问题
+- 可配置 Ollama 本地模型下载目录
+- 账号可自定义侧边栏；角色字段改为存储模板 id
+
+### 修复
+- 媒体预览 CSP、Langfuse 环境变量、IM 附件元数据
+- CLI 状态文件原子读写；移动端采集失败后停止 JPEG 流
+- 服务关闭时仍可识别本机 Ollama 模型
+- Dashboard 设计 token、知识库暗色预览、备份导入内置技能过滤
+- 旧插件 `harness_agent` 导入；移动端输入框避让视口
+
+### 变更
+- 更新 README 路线图、锚点与产品名链接
+
+## [1.0.2b4] - 2026-09-27
+
+### 新增
+- 侧栏可按账号自定义；角色模板 id 持久化
+
+### 修复
+- 暗色主题下知识库 Markdown 预览不可见
+
+### 变更
+- README 路线图与产品链接更新
 
 ## [1.0.2b3] - 2026-09-26
 

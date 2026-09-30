@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
+from octop.infra.agents.builtin_skills import is_octop_builtin_skills_path
 
 # Workspace UI semantics: leading '/' is relative to the agent workspace.
 FROM_WORKSPACE = {"from_workspace": "true"}
@@ -65,20 +66,44 @@ def _zip_with(entries: dict[str, bytes]) -> bytes:
 
 
 async def _seed(env: Any, entries: dict[str, bytes]) -> None:
-    """Seed through the sanctioned writer (archive restore) so bytes are observable.
+    """Seed the sentinels through sanctioned writers so their bytes are observable.
 
-    ``POST …/workspace/archive`` carries the registered ``.octop/**`` exemption
-    (deliberate, kept from the previous batch — see the exemption test below), so
-    it is the one writer that may place sentinels under a protected surface.
+    Two surfaces, two writers — and the split is load-bearing:
+
+    * ``.octop/**`` (team memory) → ``POST …/workspace/archive``, whose ``.octop/**``
+      exemption is deliberate (kept from the previous batch; see
+      ``test_archive_import_exemption_still_writes_team_memory`` below).
+    * ``_builtin_skills/**`` → **no longer the archive route**. Upstream b5 made
+      ``import_workspace_zip`` skip every entry under Octop's built-in Skills root
+      (``is_octop_builtin_skills_path``, ``infra/backup/workspace_archive.py``) and
+      report a warning instead: that tree is **owned by Octop**, so a restored archive
+      must not be able to ship its own copy of it — a stale or forged archive would
+      otherwise shadow the skills the running build installs. Seeding the builtin
+      sentinel through the archive therefore stopped landing it silently, the read-back
+      404'd, and the matrix looked like a guard failure while the 403s were fine.
+
+      The writer this surface still has is the one the **agent itself** uses for that
+      tree at start-up: ``sync_octop_builtin_skills`` uploads through the harness
+      workspace (``aupload_many``). This fixture uses that same entry point — never
+      ``Path.write_text``, per the repo rule that workspace content I/O goes through
+      ``HarnessAgent.workspace``. Same pattern as ``test_skills_api.py``'s
+      ``_seed_builtin_skill``, which seeds this very tree the same way.
     """
-    c, _srv, auth, aid = env
-    r = await c.post(
-        f"/api/agents/{aid}/workspace/archive",
-        params={"mode": "merge"},
-        headers=auth,
-        files={"file": ("workspace.zip", _zip_with(entries), "application/zip")},
-    )
-    assert r.status_code == 200, r.text
+    c, srv, auth, aid = env
+    archived = {rel: blob for rel, blob in entries.items() if not is_octop_builtin_skills_path(rel)}
+    if archived:
+        r = await c.post(
+            f"/api/agents/{aid}/workspace/archive",
+            params={"mode": "merge"},
+            headers=auth,
+            files={"file": ("workspace.zip", _zip_with(archived), "application/zip")},
+        )
+        assert r.status_code == 200, r.text
+
+    builtin = [(rel, blob) for rel, blob in entries.items() if is_octop_builtin_skills_path(rel)]
+    if builtin:
+        workspace = srv.app_runtime.agent_registry.get_agent(aid).workspace
+        await workspace.aupload_many(builtin)
 
 
 async def _read(c: Any, auth: dict[str, str], aid: str, rel: str) -> Any:
