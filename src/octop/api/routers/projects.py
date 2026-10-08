@@ -236,6 +236,23 @@ class CommentOut(BaseModel):
             "(the UI then shows the deactivated-user copy)."
         ),
     )
+    parent_comment_id: str | None = Field(
+        default=None,
+        description=(
+            "The comment this one quotes (PLAN §B3.1); null when it quotes nothing. "
+            "Always on the same project and the same task line as this comment — a "
+            "quote that would cross either is a 404."
+        ),
+    )
+    quote_excerpt: str | None = Field(
+        default=None,
+        description=(
+            "Snapshot of the quoted comment's text taken at write time, so the quote "
+            "still renders after the original is deleted. Null when there is nothing "
+            "to quote; the UI then omits the quote block rather than showing a "
+            "placeholder."
+        ),
+    )
 
     @classmethod
     def of(
@@ -261,6 +278,8 @@ class CommentOut(BaseModel):
             concluded_by_type=row.concluded_by_type,
             concluded_by_id=row.concluded_by_id,
             concluded_by_name=concluded_by_name,
+            parent_comment_id=row.parent_comment_id,
+            quote_excerpt=row.quote_excerpt,
         )
 
 
@@ -294,6 +313,23 @@ class CommentCreate(BaseModel):
         description=(
             "Actors the dashboard picked, as structured `[{type,id}]`. Stored "
             "verbatim — the server never parses the comment body."
+        ),
+    )
+    parent_comment_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The comment being quoted (PLAN §B3.1). It must live on this project and "
+            "on the same line as this comment (``task_id``); a missing, "
+            "cross-project, cross-task or self-referencing id is a 404."
+        ),
+    )
+    quote_excerpt: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Snapshot of the quoted text, captured now so the quote survives the "
+            "original being deleted. Over 200 characters is a 422 (PLAN §B3.2 Q7)."
         ),
     )
 
@@ -1006,6 +1042,8 @@ async def create_comment(
         body=body.body,
         task_id=body.task_id,
         mentions=body.mentions,
+        parent_comment_id=body.parent_comment_id,
+        quote_excerpt=body.quote_excerpt,
     )
     return _comment_out(server, row)
 

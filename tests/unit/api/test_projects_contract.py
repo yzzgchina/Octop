@@ -609,3 +609,272 @@ async def test_a_null_task_prefix_leaves_the_stored_prefix_alone(
 
     assert response.status_code == 200, response.text
     assert response.json()["task_prefix"] == before, response.text
+
+
+# ── family 4: V5 — an owner must be a member of *this* project ───────────────
+
+
+async def test_a_non_member_owner_is_a_400(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """PLAN §B2.5 (c) V5: bob exists as a user but is not in alice's project.
+
+    Existence alone is not membership — the repo's soft-FK check accepts bob, so
+    only the service-level member rule can refuse this.
+    """
+    client, auths, ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+
+    refused = await client.post(
+        f"{PROJECTS}/{pid}/tasks",
+        headers=alice,
+        json={"title": "T", "owners": [ids["bob"]]},
+    )
+
+    assert refused.status_code == 400, refused.text
+    assert _error_code(refused) == "PROJECT_MEMBER_INVALID", refused.text
+
+
+async def test_the_legacy_assignee_pair_cannot_smuggle_a_non_member_owner(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """R18 ⓒ: the old pair is *promoted*, then checked by the same rule.
+
+    Without promotion-then-validate this payload would be a way around V5.
+    """
+    client, auths, ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+
+    refused = await client.post(
+        f"{PROJECTS}/{pid}/tasks",
+        headers=alice,
+        json={"title": "T", "assignee_type": "user", "assignee_id": str(ids["bob"])},
+    )
+
+    assert refused.status_code == 400, refused.text
+    assert _error_code(refused) == "PROJECT_MEMBER_INVALID", refused.text
+
+
+async def test_a_legal_member_owner_is_a_201_and_nothing_is_written_when_refused(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """The positive control, plus the refusal leaving no half-built task behind."""
+    client, auths, ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+
+    refused = await client.post(
+        f"{PROJECTS}/{pid}/tasks",
+        headers=alice,
+        json={"title": "refused", "owners": [ids["bob"]]},
+    )
+    assert refused.status_code == 400, refused.text
+
+    created = await _create_task(client, alice, pid, "accepted", owners=[ids["alice"]])
+    assert created["owners"] == [ids["alice"]], created
+
+    # Exactly one task: the refused create ran before the first write.
+    board = await _board(client, alice, pid)
+    assert [t["title"] for t in board] == ["accepted"], board
+
+    # A member added afterwards becomes assignable — the rule tracks the table.
+    assert (await _add_member(client, alice, pid, ids["bob"], "member")).status_code == 201
+    promoted = await _create_task(client, alice, pid, "now legal", owners=[ids["bob"]])
+    assert promoted["owners"] == [ids["bob"]], promoted
+
+
+async def test_a_non_member_owner_is_a_400_on_patch_too(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """V5 is shared by both write verbs; the edit path cannot bypass it either."""
+    client, auths, ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+    tid = (await _create_task(client, alice, pid, "T"))["task_id"]
+
+    refused = await client.patch(
+        f"{PROJECTS}/{pid}/tasks/{tid}", headers=alice, json={"owners": [ids["bob"]]}
+    )
+
+    assert refused.status_code == 400, refused.text
+    assert _error_code(refused) == "PROJECT_MEMBER_INVALID", refused.text
+    assert (await _board(client, alice, pid))[0]["owners"] == [], "no partial write"
+
+
+# ── family 5: §B3.2 Q1-Q4 — a quoted comment must be on the same line ────────
+
+
+COMMENTS = "comments"
+
+
+async def test_quoting_a_missing_comment_is_a_404(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """Q1."""
+    client, auths, _ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+
+    refused = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={"body": "quoting nobody", "parent_comment_id": "NOSUCH"},
+    )
+
+    assert refused.status_code == 404, refused.text
+    assert _error_code(refused) == "PROJECT_NOT_FOUND", refused.text
+
+
+async def test_quoting_a_comment_from_another_project_is_a_404(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """Q2 — and the answer is identical to Q1, so existence never leaks."""
+    client, auths, _ids = api
+    alice = auths["alice"]
+    other = await _create_project(client, alice, "Borealis")
+    source = await client.post(
+        f"{PROJECTS}/{other}/{COMMENTS}", headers=alice, json={"body": "in Borealis"}
+    )
+    assert source.status_code == 201, source.text
+    foreign = source.json()["comment_id"]
+
+    pid = await _create_project(client, alice, "Apollo")
+    refused = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={"body": "quoting across projects", "parent_comment_id": foreign},
+    )
+
+    assert refused.status_code == 404, refused.text
+    assert _error_code(refused) == "PROJECT_NOT_FOUND", refused.text
+
+
+async def test_quoting_across_tasks_is_a_404(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """Q3 — including the "one side null" shape, which counts as different."""
+    client, auths, _ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+    first = (await _create_task(client, alice, pid, "T1"))["task_id"]
+    second = (await _create_task(client, alice, pid, "T2"))["task_id"]
+
+    on_first = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={"body": "on task 1", "task_id": first},
+    )
+    assert on_first.status_code == 201, on_first.text
+    quoted = on_first.json()["comment_id"]
+
+    # Different task id.
+    cross = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={"body": "cross", "task_id": second, "parent_comment_id": quoted},
+    )
+    assert cross.status_code == 404, cross.text
+    assert _error_code(cross) == "PROJECT_NOT_FOUND", cross.text
+
+    # Task-scoped parent, project-level writer (one side null ⇒ 404 as well).
+    null_side = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={"body": "project level", "parent_comment_id": quoted},
+    )
+    assert null_side.status_code == 404, null_side.text
+    assert _error_code(null_side) == "PROJECT_NOT_FOUND", null_side.text
+
+
+async def test_a_legal_parent_is_a_201(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """The positive control for Q1-Q3: same project, same line ⇒ accepted."""
+    client, auths, _ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+    tid = (await _create_task(client, alice, pid, "T1"))["task_id"]
+
+    source = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={"body": "the original", "task_id": tid},
+    )
+    assert source.status_code == 201, source.text
+
+    quoted = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={
+            "body": "the quote",
+            "task_id": tid,
+            "parent_comment_id": source.json()["comment_id"],
+            "quote_excerpt": "the original",
+        },
+    )
+
+    assert quoted.status_code == 201, quoted.text
+    assert quoted.json()["parent_comment_id"] == source.json()["comment_id"], quoted.text
+
+
+async def test_both_quote_fields_round_trip_through_the_read_path(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """The wiring is both halves or neither: write and read the two fields.
+
+    A create-only change would be silently dropped, and an output-only change
+    would be permanently null — so both endpoints are asserted on the *stored*
+    value, not just on the field existing.
+    """
+    client, auths, _ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+
+    source = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}", headers=alice, json={"body": "quoted text"}
+    )
+    assert source.status_code == 201, source.text
+    parent = source.json()["comment_id"]
+
+    created = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={
+            "body": "quoting it",
+            "parent_comment_id": parent,
+            "quote_excerpt": "quoted text",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["parent_comment_id"] == parent, created.text
+    assert created.json()["quote_excerpt"] == "quoted text", created.text
+
+    listed = (await client.get(f"{PROJECTS}/{pid}/{COMMENTS}", headers=alice)).json()
+    stored = {row["comment_id"]: row for row in listed}[created.json()["comment_id"]]
+    assert stored["parent_comment_id"] == parent, stored
+    assert stored["quote_excerpt"] == "quoted text", stored
+
+    # The unquoted comment stays null on both fields rather than becoming "".
+    first = {row["comment_id"]: row for row in listed}[parent]
+    assert first["parent_comment_id"] is None, first
+    assert first["quote_excerpt"] is None, first
+
+
+async def test_an_over_long_quote_excerpt_is_a_422(
+    api: tuple[httpx.AsyncClient, dict[str, dict[str, str]], dict[str, int]],
+) -> None:
+    """PLAN §B3.2 Q7 — the length cap lives in the request model."""
+    client, auths, _ids = api
+    alice = auths["alice"]
+    pid = await _create_project(client, alice, "Apollo")
+
+    refused = await client.post(
+        f"{PROJECTS}/{pid}/{COMMENTS}",
+        headers=alice,
+        json={"body": "x", "quote_excerpt": "z" * 201},
+    )
+
+    assert refused.status_code == 422, refused.text
+    assert "quote_excerpt" in _rejected_fields(refused), refused.text

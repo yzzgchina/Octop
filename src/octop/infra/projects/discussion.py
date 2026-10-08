@@ -192,6 +192,40 @@ class ProjectDiscussion:
             raise OctopError(ErrorCode.PROJECT_NOT_FOUND, "Comment not found in this project.")
         return row
 
+    def assert_quote_ok(
+        self,
+        project_id: str,
+        *,
+        parent_comment_id: str,
+        task_id: str | None,
+        comment_id: str | None = None,
+    ) -> ProjectCommentRow:
+        """PLAN §B3.2 Q1-Q4 — a quoted comment must be visible in the writer's line.
+
+        Every refusal is the **same** 404 as the existing "id not in this project"
+        surfaces, and it goes through :meth:`_require_comment_in_project` rather than
+        a second lookup: a comment in another project is indistinguishable from one
+        that does not exist, so the answer never leaks whether the id is real
+        (Q1/Q2).
+
+        ``task_id`` is the quoting comment's line; the quoted comment must sit on the
+        *same* line, and "one side null, the other not" counts as different (Q3) —
+        the same "cross parent ⇒ 404" rule the task tree uses.
+
+        ``comment_id`` is the quoting comment's own id, and is ``None`` on the create
+        path because the id does not exist until the row is inserted (Q4 is
+        therefore only reachable where an existing comment is re-pointed at itself).
+        """
+        parent = self._require_comment_in_project(project_id, parent_comment_id)
+        if comment_id is not None and parent_comment_id == comment_id:
+            # Q4: the self-reference is a 404 like the other three — the descendant
+            # guard in the task repo made the same choice, and a single code keeps
+            # "cannot be quoted" from leaking *why*.
+            raise OctopError(ErrorCode.PROJECT_NOT_FOUND, "Comment not found in this project.")
+        if parent.task_id != task_id:
+            raise OctopError(ErrorCode.PROJECT_NOT_FOUND, "Comment not found in this project.")
+        return parent
+
     def _require_author_or_governance(
         self, project_id: str, comment_id: str, *, user: ProjectActor
     ) -> ProjectCommentRow:
@@ -360,12 +394,19 @@ class ProjectDiscussion:
         author_type: str = COMMENT_AUTHOR_USER,
         author_id: str | None = None,
         mentions: list[dict[str, str]] | None = None,
+        parent_comment_id: str | None = None,
+        quote_excerpt: str | None = None,
     ) -> ProjectCommentRow:
         """Add one comment to a project or task line; requires ``write`` (§4.6).
 
         ``author_id`` defaults to the acting user, which is the dashboard path;
         an ``agent`` author names the agent explicitly, because a user id recorded
         as an agent id would misattribute the words (see :meth:`add_agent_comment`).
+
+        ``parent_comment_id`` quotes another comment on the **same** line, and
+        ``quote_excerpt`` is the snapshot the reader renders after that comment is
+        deleted (PLAN §B3.1). The quote is checked before the write, so a refused
+        quote leaves no row behind.
         """
         self._projects.assert_project_role(project_id, user=user, required=PROJECT_WRITE)
         if author_type not in COMMENT_AUTHOR_TYPES:
@@ -374,6 +415,8 @@ class ProjectDiscussion:
             if author_type != COMMENT_AUTHOR_USER:
                 raise ValueError("an agent comment must name its author_id")
             author_id = str(user.id)
+        if parent_comment_id is not None:
+            self.assert_quote_ok(project_id, parent_comment_id=parent_comment_id, task_id=task_id)
         return self._comments.create(
             project_id=project_id,
             task_id=task_id,
@@ -383,6 +426,8 @@ class ProjectDiscussion:
             body=_require_body(body),
             source=source,
             mentions=mentions,
+            parent_comment_id=parent_comment_id,
+            quote_excerpt=quote_excerpt,
         )
 
     def add_agent_comment(
