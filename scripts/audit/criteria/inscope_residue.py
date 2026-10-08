@@ -16,17 +16,25 @@
      供**显式传参**单独复核（★ **绝不动** `all:` 那一行：它被 `AUD-G2` 逐字冻结）。
 
 ★★ 五类判据（① ② ④ 为「卡面与实际不符」）：
-  ① **层级错配**：卡是【前端】（`npx vitest` / `dashboard/` / `tsc -b`）而 `inScope` 含【后端路径】⇒ 红
+  ① **层级错配**：卡是【前端】（`npx vitest` / `dashboard/` / `tsc -b`）而 `inScope` **声明的路径
+     【全部】**属【后端】⇒ 红 —— ★★ **承 lead 裁定**（`P1-21`）：同时声明两层路径的**跨层卡不报**
+     （★ 旧口径「只要含一个后端路径就红」对双域卡**双向**报红 ⇒ 实测 11 条假阳性；★ 真阳性仍在）
   ② **反向错配**：卡是【后端】（`uv run pytest` / `tests/unit` / `tests/integration`）而 `inScope`
-     含【前端路径】⇒ 红
+     **声明的路径【全部】**属【前端】⇒ 红（★ 同上：跨层卡不报）
   ③ **路径存在性**：`inScope` 里【不存在的路径】⇒ 红 —— ★★ **承 lead 裁定**（`P1-17.notes`）：
      卡的 `status` ∈ {`pending`, `in_progress`} ⇒ 其 `inScope` 指向的路径**允许尚不存在**（计划新建，
      不判 ③ 命中）；`status == completed` ⇒ 路径仍不存在 ⇒ **红**（该卡声称改了却查无此文件）。
      ★ 依据：`P1-7` 实测本 run 有大量「计划新建」路径（含 `P1-2…P1-5` 的模块目录）⇒ 不按此口径
      接线，门禁一接上就**长期红**。
      ★ 其它 / 缺失 `status` ⇒ **`UNKNOWN`**（fail-closed：★ 既不得记绿，也不误判红）。
+     ★★ **③ 对目录【不放宽】**（承 `P1-21` 裁定）：目录型条目仍须**真实存在** ⇒ 不得因为它是目录
+        就跳过存在性检查（⑤ 的目录子树口径**只在 ⑤ 生效**）。
   ④ **载体错位**：同一脚本在 runDir 与仓库两份 ⇒ 必须登记【仓库那份】
   ⑤ **覆盖完整性**：本批【实际改动的产品文件】必须出现在某卡的 `inScope` / `referencedFiles` 内
+     ★★ **承 lead 裁定**（`P1-21`）：**目录型条目视为覆盖其子树** —— `inScope` 条目**以 `/` 结尾
+     或实际是目录** ⇒ 其子树内的改动文件视为被覆盖（★ 旧口径逐字精确匹配 ⇒ 实测 2 条假阳性；
+     ★ 本 run 共 37 处目录型 `inScope`）。★ 未在任何卡 `inScope`（文件或目录子树）里声明的改动
+     文件**仍报红**（真阳性仍在）。
 
 ★★ 退出码（CLI 模式 · 与 `current_tree.py` 同构）：
    `0` 干净 ✓ · `1` 发现越界 ✗ · `2` **无法判定**（fail-closed ⇒ ★ **不得输出绿**）· `3` 用法/参数错误
@@ -206,11 +214,20 @@ def evaluate(run_dir, root, changed, changed_src):
         text = str(card.get("acceptance", "")) + " " + str(card.get("verify", ""))
         is_fe = any(key in text for key in FE_MARK)
         is_be = any(key in text for key in BE_MARK)
-        for path in scope:
-            if is_fe and path.startswith(BE_PATH) and not path.startswith("team/"):
-                hits.append((tid, path, "① 卡是【前端】而 `inScope` 含【后端路径】✗"))
-            if is_be and path.startswith(FE_PATH):
-                hits.append((tid, path, "② 卡是【后端】而 `inScope` 含【前端路径】✗"))
+        # ★★ ①② 的「双域卡」口径（★ 承 lead 裁定 · `P1-21`）：**只在该卡声明的路径【全部】属
+        #   另一层时才报红**；同时声明两层路径的**跨层卡不报**。
+        #   ★ 依据（实测）：`P0-5` / `P1-6` / `P1-16` / `P3-2` / `P3-3` / `P3-7` 的 `acceptance`/
+        #     `verify` **同时**含前端与后端标记（`P1-7` 冻结的词表）⇒ 旧口径对同一张卡**双向**报红
+        #     （实测 11 条假阳性）；这些卡本就**跨层**（后端测试 + 前端产物同属一张卡）。
+        #   ★ 真阳性**仍在**：卡只声明另一层的路径（本层路径 0 条）⇒ ①/② 照旧报红。
+        product_scope = [item for item in scope if not item.startswith("team/")]
+        declares_fe = any(item.startswith(FE_PATH) for item in product_scope)
+        declares_be = any(item.startswith(BE_PATH) for item in product_scope)
+        for path in product_scope:
+            if is_fe and not declares_fe and path.startswith(BE_PATH):
+                hits.append((tid, path, "① 卡是【前端】而 `inScope` 路径**全部**属【后端】✗"))
+            if is_be and not declares_be and path.startswith(FE_PATH):
+                hits.append((tid, path, "② 卡是【后端】而 `inScope` 路径**全部**属【前端】✗"))
         for path in scope:
             if path.startswith("team/") or (root / path).exists():
                 continue
@@ -234,13 +251,22 @@ def evaluate(run_dir, root, changed, changed_src):
     covered = set()
     for scope in scopes.values():
         covered.update(scope)
+    # ★★ ⑤ 的「目录项视为其子树覆盖」（★ 承 lead 裁定 · `P1-21`）：`inScope` 条目**以 `/` 结尾
+    #   或实际是目录** ⇒ 其**子树内的文件**视为被该卡覆盖。★ 依据（实测）：本 run 共 37 处目录型
+    #   `inScope`（如 `scripts/audit/criteria/`），旧口径是**逐字精确匹配** ⇒ 目录声明不可能覆盖
+    #   其子文件 ⇒ 实测 2 条⑤假阳性。
+    #   ★★ ③ **不随之放宽**：③ 里目录仍须**真实存在**（下面的存在性检查一字未动）——
+    #      「目录型条目」只在 ⑤ 的覆盖判定里生效，不得拿它跳过 ③。
+    covered_dirs = tuple(prefix if prefix.endswith("/") else prefix + "/"
+                         for prefix in sorted(covered)
+                         if prefix.endswith("/") or (root / prefix).is_dir())
     unjudgeable = bool(unknowns)
     product_changed = [item for item in changed if not item.startswith(NON_PRODUCT)]
     for path in product_changed:
-        if path in covered:
+        if path in covered or path.startswith(covered_dirs):
             continue
         line = (f"⑤ 覆盖缺失：本批改动的产品文件 `{path}` 不在 run `{run_id}` 的任何卡的 "
-                f"`inScope`/`referencedFiles` 里（本 run 共 {len(tasks)} 张卡）")
+                f"`inScope`/`referencedFiles` 里（★ 含目录型条目的子树 · 本 run 共 {len(tasks)} 张卡）")
         if unjudgeable:
             unknowns.append(line + " ⇒ ★ 但有卡的 `inScope` 形态判不了 ⇒ fail-closed ⇒ 判 UNKNOWN ✗")
         else:
@@ -356,9 +382,11 @@ def check_inscope_residue(ctx):
     claim = ("文档声称：卡的 `inScope` 路径与其层级/域一致 ∧ 不存在的路径要么是**计划新建**"
              f"（`status` ∈ {{{', '.join(reg.INSCOPE_MISSING_ALLOWED_STATUS)}}} · 承 lead 裁定）、"
              f"要么已落盘（`status == `{reg.INSCOPE_COMPLETED_STATUS}`）∧ 本批改动的产品文件被某卡的 "
-             "`inScope`/`referencedFiles` 覆盖（`R3` 两条硬规则之一）")
-    fix = ("应改成：修卡面（路径笔误 / 把描述串写成路径）或在 `completed` 卡声称的路径上真的落文件；"
-           "★ 计划新建的卡保持 `status=pending`/`in_progress`；★ 不得用 `|| true` / 放宽判据凑绿")
+             "`inScope`/`referencedFiles` 覆盖（`R3` 两条硬规则之一）· ★ 承 `P1-21` 裁定：①② 只对"
+             "**单层卡**（声明路径全部属另一层）报红 · ⑤ 里**目录型条目视为覆盖其子树**")
+    fix = ("应改成：修卡面（路径笔误 / 把描述串写成路径 / 跨树路径）或在 `completed` 卡声称的路径上"
+           "真的落文件；★ 计划新建的卡保持 `status=pending`/`in_progress`；★ 不得用 `|| true` / "
+           "放宽判据凑绿")
     head = (f"实测量：run `{report.run_id}` · 卡 {report.cards} 张（形态可判 {report.judged}）· "
             f"计划新建而暂缺的路径 {report.planned} 条（★ 承裁定 ⇒ 不判红）· 本批产品改动 "
             f"{report.product_n} 个文件（来源 {report.changed_src}）")
