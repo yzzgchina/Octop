@@ -20,16 +20,16 @@ REGRESSION = "regression"
 
 STATE_LABEL = {OK: "绿", FAIL: "红", UNKNOWN: "未知"}
 
-# ★ 冻结的 20 条 id（`SL-1` · `K` 批追加 `AUD-S6` · `P1-2` 批追加 `AUD-C1…C10`）
-# ★ 冻结的 17 条硬判（`SL-2` · `AUD-C1…C9` 追加在末尾；★ `AUD-C10` 是 `guard` 类，不入硬判白名单）
+# ★ 冻结的 21 条 id（`SL-1` · `K` 批追加 `AUD-S6` · `P1-2` 批追加 `AUD-C1…C10` · `P1-4` 追加 `AUD-C11`）
+# ★ 冻结的 18 条硬判（`SL-2` · `AUD-C1…C9` 追加；`P1-4` 追加 `AUD-C11`；★ `AUD-C10` 是 `guard` 类，不入硬判白名单）
 # ★ `FROZEN_IDS` 有顺序语义（`current_tree.py` 按它排序）⇒ 新增 id **追加在末尾**，不打乱既有顺序
 FROZEN_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", "AUD-G1", "AUD-G2",
               "AUD-S6",
               "AUD-C1", "AUD-C2", "AUD-C3", "AUD-C4", "AUD-C5", "AUD-C6", "AUD-C7", "AUD-C8",
-              "AUD-C9", "AUD-C10")
+              "AUD-C9", "AUD-C10", "AUD-C11")
 HARD_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", "AUD-S6",
             "AUD-C1", "AUD-C2", "AUD-C3", "AUD-C4", "AUD-C5", "AUD-C6", "AUD-C7", "AUD-C8",
-            "AUD-C9")
+            "AUD-C9", "AUD-C11")
 
 # ★ `AUD-G2` 的冻结锚点（`Makefile @207` 逐字）
 MAKEFILE_NAME = "Makefile"
@@ -94,6 +94,16 @@ DASHBOARD_ARTIFACT_REL = "src/octop/dashboard"
 DASHBOARD_PUBLIC_REL = "dashboard/public"
 # ★ `AUD-C10` 树指纹（★ 单一字段 · 派生自各判据 `input_digest` ⇒ 不复制常量表）
 FINGERPRINT_ID = "AUD-C10"
+# ★ `AUD-C11` 绑定地址单源（序号 27）：★ 输入在**仓库工作区之外** ⇒ 参数化探测根供夹具注入
+#   （★ 判别性对照一律在 `/tmp` 夹具里做 ⇒ 不碰真实 `~`）· ★ `R8`：判据必须**打印实际探测的基准目录**
+BIND_LAUNCHD_DIR_ENV = "OCTOP_AUDIT_LAUNCHD_DIR"
+BIND_OCTOP_HOME_ENV = "OCTOP_AUDIT_OCTOP_HOME"
+BIND_LAUNCHD_DIR_REL = "Library/LaunchAgents"     # ★ 相对 `$HOME`
+BIND_OCTOP_HOME_REL = ".octop"                    # ★ 相对 `$HOME`
+BIND_PLIST_NAME = "octop.plist"
+BIND_CONFIG_NAME = "config.json"
+BIND_HOST_FLAG = "--host"
+BIND_CONFIG_KEY = "bind_host"
 
 EXEMPTIONS_REL = "scripts/audit/exemptions.json"
 EXEMPTION_SCHEMA = "octop.audit.exemptions/1"

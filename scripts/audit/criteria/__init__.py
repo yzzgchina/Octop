@@ -1,8 +1,9 @@
-"""★ `scripts/audit/criteria` 包标记 —— ★ 导入即完成 **20** 条判据的注册（`AUD-G1` 与 `AUD-C10`
+"""★ `scripts/audit/criteria` 包标记 —— ★ 导入即完成 **21** 条判据的注册（`AUD-G1` 与 `AUD-C10`
 由注册表自检 / 入口事实注入产出）。"""
 
 from . import (
     audit_log,  # noqa: F401
+    bind_source,  # noqa: F401
     docs_numbers,  # noqa: F401
     guard,  # noqa: F401
     locale_toplevel,  # noqa: F401
