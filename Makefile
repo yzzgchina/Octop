@@ -236,9 +236,11 @@ test:
 #   有套件加载失败（`FAIL … [ … ]`）⇒ **1** · 仅用例失败（`FAIL … > …`）⇒ **2** · 全绿 ⇒ **0**
 #   · ★ `counts` 报有失败而分类为空 ⇒ **1**（守卫 · `AC-9`）· ★★ 无输入 / 无法解析（`P2'` 不成立）⇒ **3**。
 # ★ `2` 与 `3` 也是失败 ⇒ **不得** `|| true`。
+# ★ `P1-19`：第三段解释器**不得**写裸 `python3` —— 本仓 CI 只声明 `setup-uv`（⇒ `uv run python`），
+#   `python3` 是 Windows 镜像的**镜像内别名**、不是本仓工具链的保证 ⇒ 统一用 `$(PYTHON)`。
 test-frontend:
 	@echo "[test-frontend] vitest + fail-classifier (1 = suite load, 2 = case fail, 3 = no input)..."
-	@set -o pipefail; cd $(DASHBOARD_DIR) && npx vitest run 2>&1 | tee /tmp/octop-vitest.log | python3 scripts/vitest-fail-classify.py
+	@set -o pipefail; cd $(DASHBOARD_DIR) && npx vitest run 2>&1 | tee /tmp/octop-vitest.log | $(PYTHON) scripts/vitest-fail-classify.py
 
 .PHONY: test-fast
 test-fast:
