@@ -20,16 +20,18 @@ REGRESSION = "regression"
 
 STATE_LABEL = {OK: "绿", FAIL: "红", UNKNOWN: "未知"}
 
-# ★ 冻结的 21 条 id（`SL-1` · `K` 批追加 `AUD-S6` · `P1-2` 批追加 `AUD-C1…C10` · `P1-4` 追加 `AUD-C11`）
-# ★ 冻结的 18 条硬判（`SL-2` · `AUD-C1…C9` 追加；`P1-4` 追加 `AUD-C11`；★ `AUD-C10` 是 `guard` 类，不入硬判白名单）
+# ★ 冻结的 22 条 id（`SL-1` · `K` 批追加 `AUD-S6` · `P1-2` 批追加 `AUD-C1…C10` · `P1-4` 追加 `AUD-C11`
+#   · `P1-17` 追加 `AUD-C12`）
+# ★ 冻结的 19 条硬判（`SL-2` · `AUD-C1…C9` 追加；`P1-4` 追加 `AUD-C11`；`P1-17` 追加 `AUD-C12`；
+#   ★ `AUD-C10` 是 `guard` 类，不入硬判白名单）
 # ★ `FROZEN_IDS` 有顺序语义（`current_tree.py` 按它排序）⇒ 新增 id **追加在末尾**，不打乱既有顺序
 FROZEN_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", "AUD-G1", "AUD-G2",
               "AUD-S6",
               "AUD-C1", "AUD-C2", "AUD-C3", "AUD-C4", "AUD-C5", "AUD-C6", "AUD-C7", "AUD-C8",
-              "AUD-C9", "AUD-C10", "AUD-C11")
+              "AUD-C9", "AUD-C10", "AUD-C11", "AUD-C12")
 HARD_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", "AUD-S6",
             "AUD-C1", "AUD-C2", "AUD-C3", "AUD-C4", "AUD-C5", "AUD-C6", "AUD-C7", "AUD-C8",
-            "AUD-C9", "AUD-C11")
+            "AUD-C9", "AUD-C11", "AUD-C12")
 
 # ★ `AUD-G2` 的冻结锚点（`Makefile @207` 逐字）
 MAKEFILE_NAME = "Makefile"
@@ -104,6 +106,18 @@ BIND_PLIST_NAME = "octop.plist"
 BIND_CONFIG_NAME = "config.json"
 BIND_HOST_FLAG = "--host"
 BIND_CONFIG_KEY = "bind_host"
+# ★ `AUD-C12` `inScope` 残留 + 覆盖完整性（`P1-7` 的 D-9 检查器 · `P1-17` 迁入受管位置并接线）：
+#   ★ 输入一律**显式**（承 `R8`：调用方必须显式传、并打印基准目录）⇒ ★ 判据模式的单一出处在这里
+#   （★ 缺 ⇒ 该判据判 `UNKNOWN` ⇒ **不是绿** ⇒ 无假绿通道 · 承 `AUD-C11` 的同款处置）
+INSCOPE_RUN_DIR_ENV = "OCTOP_AUDIT_RUN_DIR"
+INSCOPE_CHANGED_LIST_ENV = "OCTOP_AUDIT_CHANGED_LIST"
+INSCOPE_GIT_RANGE_ENV = "OCTOP_AUDIT_GIT_RANGE"
+INSCOPE_TASKS_NAME = "TASKS.json"
+# ★★ lead 裁定（`P1-17.notes` · 逐字）：卡的 `status` 为 `pending`/`in_progress` 时，其 `inScope`
+#   指向的路径允许尚不存在（= 计划新建，不判「③ 路径不存在」命中）；`status` 为 `completed` 时
+#   仍不存在 ⇒ 判红（该卡声称改了却查无此文件）。★ 其它/缺失 `status` ⇒ 判据判 `UNKNOWN`（fail-closed）
+INSCOPE_MISSING_ALLOWED_STATUS = ("pending", "in_progress")
+INSCOPE_COMPLETED_STATUS = "completed"
 
 EXEMPTIONS_REL = "scripts/audit/exemptions.json"
 EXEMPTION_SCHEMA = "octop.audit.exemptions/1"
