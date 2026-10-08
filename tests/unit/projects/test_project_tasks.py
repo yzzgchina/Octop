@@ -16,7 +16,8 @@ import pytest
 from tests.support.app import octop_client
 from tests.support.auth import auth_header, bootstrap_admin
 
-from octop.infra.db.migrate import run_migrations
+from octop.infra.db import migrate
+from octop.infra.db.migrate import _backfill_project_task_numbering, run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos._base import UNSET
 from octop.infra.db.repos.agents import AgentRepo
@@ -1209,3 +1210,81 @@ async def test_a_user_assignee_with_no_users_row_is_422_with_the_named_code(
     board = await client.get(f"{PROJECTS}/{project_id}/tasks", headers=auth)
     assert board.status_code == 200, board.text
     assert board.json() == []
+
+
+# ── F3: the v27 backfill must exclude unrepresentable ``user`` rows ───────────
+
+
+def _seed_legacy_task_with_a_missing_user(pool: SqlitePool) -> None:
+    """A v26-era ``project_tasks`` row whose ``user`` assignee names no ``users`` row.
+
+    ``9999`` is an ASCII-decimal id, so it passes the dirty-id gate; no ``users``
+    row carries it, so it is exactly the F3 shape (a deleted user).
+    """
+    uid = UserRepo(pool).create(username="owner_prj_1", password_hash="h", role="user")
+    with pool.transaction() as conn:
+        conn.execute(
+            "INSERT INTO projects (project_id, name, owner_user_id, memory_namespace,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("prj_1", "Demo", uid, "project_prj_1", 1, 1),
+        )
+        conn.execute(
+            "INSERT INTO project_tasks (task_id, project_id, title, assignee_type,"
+            " assignee_id, sort_order, created_by, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)",
+            ("task_gone", "prj_1", "task_gone", "user", "9999", 0, uid),
+        )
+
+
+def test_backfill_excludes_a_missing_user_row_and_every_rerun_reads_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ ``f3-select-exclude`` (user ruling 2026-10-08).
+
+    A ``project_tasks`` row with ``assignee_type='user'`` whose id names no
+    ``users`` row cannot be represented in ``project_task_owners.user_id``. The
+    backfill's ``SELECT`` must therefore exclude it outright: while it stayed in
+    the set, the "already mapped" guard never became true for it and *every*
+    re-run re-counted it (``owners_skipped`` was forever 1, with 0 rows written).
+
+    Discriminating: with the pre-fix ``SELECT`` the re-run reads
+    ``{'owners_skipped': 1, ...}``; with the exclusion it reads all zeros.
+    """
+    pool = SqlitePool(tmp_path / "octop.db")
+    real_discover = migrate._discover
+    monkeypatch.setattr(
+        migrate,
+        "_discover",
+        lambda dialect="sqlite": [item for item in real_discover(dialect) if item[0] <= 24],
+    )
+    run_migrations(pool)
+    _seed_legacy_task_with_a_missing_user(pool)
+
+    monkeypatch.undo()
+    run_migrations(pool)  # the 24 -> 27 step: DDL then the first data backfill
+
+    def snapshot() -> tuple[int, int]:
+        with pool.connect() as conn:
+            owners = int(
+                conn.execute("SELECT COUNT(*) AS n FROM project_task_owners").fetchone()["n"]
+            )
+            tasks = int(conn.execute("SELECT COUNT(*) AS n FROM project_tasks").fetchone()["n"])
+        return owners, tasks
+
+    before = snapshot()
+    counts = _backfill_project_task_numbering(pool)
+
+    # ② the re-run reads a literal 0 -- not "smaller", not "waived".
+    assert counts["owners_skipped"] == 0, counts
+    # The excluded row is the only candidate, so nothing is left to do at all.
+    assert counts == dict.fromkeys(counts, 0), counts
+    # ③ nothing was written: the excluded row never reached the library, before
+    # or after -- the two ``SELECT COUNT(*)`` readings are identical.
+    assert snapshot() == before == (0, 1), (before, snapshot())
+
+    # The excluded row itself is left verbatim (no half-applied rewrite).
+    with pool.connect() as conn:
+        row = conn.execute(
+            "SELECT assignee_type, assignee_id FROM project_tasks WHERE task_id = 'task_gone'"
+        ).fetchone()
+    assert (row["assignee_type"], row["assignee_id"]) == ("user", "9999")

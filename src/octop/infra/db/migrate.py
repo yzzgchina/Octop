@@ -1863,14 +1863,41 @@ def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
         # non-ASCII digits ('٧' -> 7) -- i.e. it would silently remap a dirty id
         # onto a DIFFERENT existing user. ``isascii() and isdigit()`` accepts
         # exactly ASCII decimal ('07' included) and rejects the rest.
+        # ★ ``f3-select-exclude`` (user ruling 2026-10-08): a ``user`` row whose
+        # well-formed id names no ``users`` row cannot be represented in
+        # ``project_task_owners.user_id``, so the SELECT below excludes it
+        # outright. Counting it instead made the "0 rows" judgement false: such a
+        # row never gains an owner/executor row, so the two NOT EXISTS guards
+        # never become true for it and *every* re-run re-read
+        # ``owners_skipped: 1`` while writing nothing.
+        # The exclusion is spelled in SQL -- not only in the loop -- so the row
+        # never enters the set. It reuses the same ASCII-decimal gate: PostgreSQL
+        # gets a regex plus a CASE (which, unlike AND, guarantees evaluation
+        # order -- a bare ``::numeric`` may run before the regex and raise
+        # 22P02); SQLite gets GLOB (its CAST never raises, so the guard there
+        # only keeps dirty ids in the set for ``invalid_skipped``). ``NUMERIC``
+        # rather than ``INTEGER`` so an over-long id skips instead of
+        # overflowing, and '07' stays mappable on both dialects.
         # Tasks that already carry a mapping are skipped, so a re-run reads and
         # writes nothing at all (the "0 rows" idempotency judgement).
         valid_users = {int(row["id"]) for row in conn.execute("SELECT id FROM users").fetchall()}
+        if db.dialect == "postgresql":
+            exclude_unrepresentable = (
+                " AND NOT (t.assignee_type = 'user' AND CASE WHEN t.assignee_id ~ '^[0-9]+$'"
+                " THEN CAST(t.assignee_id AS NUMERIC) END NOT IN (SELECT id FROM users))"
+            )
+        else:
+            exclude_unrepresentable = (
+                " AND NOT (t.assignee_type = 'user' AND t.assignee_id <> ''"
+                " AND t.assignee_id NOT GLOB '*[^0-9]*'"
+                " AND CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users))"
+            )
         for row in conn.execute(
             "SELECT t.task_id, t.assignee_type, t.assignee_id FROM project_tasks t"
             " WHERE t.assignee_type IS NOT NULL AND t.assignee_id IS NOT NULL"
             " AND NOT EXISTS (SELECT 1 FROM project_task_owners o WHERE o.task_id = t.task_id)"
             " AND NOT EXISTS (SELECT 1 FROM project_task_executors e WHERE e.task_id = t.task_id)"
+            f"{exclude_unrepresentable}"
         ).fetchall():
             assignee_type = str(row["assignee_type"])
             assignee_id = str(row["assignee_id"])
