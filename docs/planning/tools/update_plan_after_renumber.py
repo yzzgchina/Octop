@@ -8,12 +8,18 @@ The appended status section explains what actually happened.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-PLAN = Path(r"D:\nancc\octop\Octop-总计划与落地开发计划.md")
+# Plan doc = docs/planning/Octop-总计划与落地开发计划.md next to this script's parent dir
+# (docs/planning/tools/ -> ../). Set OCTOP_PLAN_DOC to target another copy of the plan.
+PLAN = Path(
+    os.environ.get("OCTOP_PLAN_DOC")
+    or Path(__file__).resolve().parents[1] / "Octop-总计划与落地开发计划.md"
+)
 
 # (pattern, replacement) applied globally — each is unambiguous.
 REWRITES: list[tuple[str, str]] = [

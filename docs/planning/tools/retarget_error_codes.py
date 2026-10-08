@@ -7,12 +7,16 @@ an explicit per-line mapping with a guard on each target line.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-ROOT = Path(r"D:\nancc\octop\Octop-develop\tests\unit\projects")
+# Repo root = the checkout this script lives in (docs/planning/tools/ -> ../../..).
+# Set OCTOP_ROOT to target another checkout. Never hard-code a machine path here.
+REPO = Path(os.environ.get("OCTOP_ROOT") or Path(__file__).resolve().parents[3])
+ROOT = REPO / "tests/unit/projects"
 
 # file -> {1-based line: (expected_current, replacement)}
 PLAN: dict[str, dict[int, tuple[str, str]]] = {

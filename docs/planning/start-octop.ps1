@@ -12,9 +12,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. D:\nancc\octop\dev-env.ps1 | Out-Null
+# dev-env.ps1 与本脚本同目录（样本见 dev-env.sample.ps1）；可用 $env:OCTOP_DEV_ENV 覆盖。
+# 若你把本脚本放到仓库外，请显式设 $env:OCTOP_DEV_ENV 指向你自己的 dev-env.ps1。
+$devEnv = if ($env:OCTOP_DEV_ENV) { $env:OCTOP_DEV_ENV } else { Join-Path $PSScriptRoot 'dev-env.ps1' }
+. $devEnv | Out-Null
 
-$repo = 'D:\nancc\octop\Octop-develop'
+# 仓库根：优先 $env:OCTOP_ROOT；否则由本脚本位置相对推导（docs/planning/ -> 仓库根）。
+$repo = if ($env:OCTOP_ROOT) { $env:OCTOP_ROOT } else {
+    (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+}
 Set-Location $repo
 
 if ($Build) {
@@ -31,7 +37,7 @@ if ($Build) {
 # 部署前自检：迁移版本 + 项目表
 Write-Host '[check] control plane ...' -ForegroundColor Cyan
 $env:OCTOP_HOME = Join-Path $env:USERPROFILE '.octop'
-uv run python D:\nancc\octop\_tools\check_local_deploy.py
+uv run python (Join-Path $PSScriptRoot 'tools\check_local_deploy.py')
 
 Write-Host ("[run] http://{0}:{1}" -f $HostAddr, $Port) -ForegroundColor Cyan
 uv run octop run --host $HostAddr --port $Port

@@ -7,12 +7,16 @@ line still looks like what we expect) rather than a blind replace-all.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-PATH = Path(r"D:\nancc\octop\Octop-develop\src\octop\infra\projects\service.py")
+# Repo root = the checkout this script lives in (docs/planning/tools/ -> ../../..).
+# Set OCTOP_ROOT to target another checkout. Never hard-code a machine path here.
+REPO = Path(os.environ.get("OCTOP_ROOT") or Path(__file__).resolve().parents[3])
+PATH = REPO / "src/octop/infra/projects/service.py"
 
 # 1-based line -> replacement helper
 TARGETS: dict[int, str] = {

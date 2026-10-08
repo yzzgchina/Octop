@@ -15,7 +15,9 @@ $ErrorActionPreference = 'Continue'
 #   看不到新装的 git / make（进程环境块是启动时的快照）。
 $gitCmd    = 'C:\Program Files\Git\cmd'          # git.exe 本体
 $gitUsrBin = 'C:\Program Files\Git\usr\bin'      # sh / pwd / chmod —— make 需要它当 SHELL
-$pgBin     = 'D:\nancc\tools\pgsql\pgsql\bin'    # psql / pg_dump / pg_restore
+# EXAMPLE — 示例占位：换成你自己机器上的 PostgreSQL bin 目录（psql / pg_dump / pg_restore），
+#           也可先设 $env:OCTOP_PG_BIN，这里优先取环境变量。
+$pgBin     = if ($env:OCTOP_PG_BIN) { $env:OCTOP_PG_BIN } else { 'D:\path\to\pgsql\bin' }
 
 $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 $userPath    = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -40,7 +42,10 @@ foreach ($c in 'git', 'make', 'uv', 'node', 'psql', 'pg_dump') {
 Write-Host ("  PYTHONUTF8 = {0}" -f $env:PYTHONUTF8)
 Write-Host ("  TEST DSN   = {0}" -f $env:OCTOP_TEST_DATABASE_URL)
 
-$repo = 'D:\nancc\octop\Octop-develop'
+# 仓库根：优先 $env:OCTOP_ROOT；否则由本脚本位置相对推导（docs/planning/ -> 仓库根）。
+$repo = if ($env:OCTOP_ROOT) { $env:OCTOP_ROOT } else {
+    (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+}
 if (Test-Path $repo) {
     Push-Location $repo
     $br = git branch --show-current 2>$null
@@ -57,7 +62,7 @@ if (Get-Command pg_isready -ErrorAction SilentlyContinue) {
 
 Write-Host ''
 Write-Host '常用命令：' -ForegroundColor Cyan
-Write-Host '  cd D:\nancc\octop\Octop-develop'
+Write-Host ("  cd {0}" -f $repo)
 Write-Host '  make all                      # 全量门禁（约 7-8 分钟）'
 Write-Host '  uv run pytest tests/unit/db -q'
 Write-Host '  uv run pytest -m postgresql -q  # 需 DSN，本脚本已设'

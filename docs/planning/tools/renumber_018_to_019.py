@@ -7,6 +7,7 @@ it finds a leftover conflict marker.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -14,7 +15,9 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-REPO = Path(r"D:\nancc\octop\Octop-develop")
+# Repo root = the checkout this script lives in (docs/planning/tools/ -> ../../..).
+# Set OCTOP_ROOT to target another checkout. Never hard-code a machine path here.
+REPO = Path(os.environ.get("OCTOP_ROOT") or Path(__file__).resolve().parents[3])
 MIGRATE = REPO / "src/octop/infra/db/migrate.py"
 MIGRATIONS = REPO / "src/octop/infra/db/migrations"
 
