@@ -765,12 +765,14 @@ def test_mirror_prefers_the_executor_over_the_owner() -> None:
 
 
 def test_normalize_promotes_the_legacy_pair() -> None:
+    # The old pair names ONE subject, so the lift replaces the whole pair: the
+    # side it does not name is cleared, and both sides count as touched.
     _assert_mapping(
         normalize_assignees(assignee_type="user", assignee_id="9"),
         owners=(9,),
         executors=(),
         mirror=("user", "9"),
-        changed=(True, False),
+        changed=(True, True),
     )
     for kind in ("agent", "team"):
         _assert_mapping(
@@ -778,7 +780,7 @@ def test_normalize_promotes_the_legacy_pair() -> None:
             owners=(),
             executors=(f"{kind}:x1",),
             mirror=(kind, "x1"),
-            changed=(False, True),
+            changed=(True, True),
         )
     # the old NULL/NULL clear has exactly one faithful mapping: both sides empty
     _assert_mapping(
@@ -788,6 +790,56 @@ def test_normalize_promotes_the_legacy_pair() -> None:
         mirror=(None, None),
         changed=(True, True),
     )
+
+
+def test_legacy_pair_replaces_the_whole_pair_across_sides() -> None:
+    """★ The legacy pair must not leave the other side's stored rows standing.
+
+    The mirror is derived ``executors[0]`` first, so lifting only the named side
+    would park the mirror on the *old* subject when a task is re-assigned from
+    ``team`` / ``agent`` to ``user`` — the task would still look (and dispatch)
+    as the old team. The reverse direction would keep an invisible stale owner.
+    """
+    # team ⇒ user: the stored executor must be gone and the mirror must follow.
+    _assert_mapping(
+        normalize_assignees(
+            assignee_type="user",
+            assignee_id="9",
+            current_owners=[],
+            current_executors=["team:t1"],
+        ),
+        owners=(9,),
+        executors=(),
+        mirror=("user", "9"),
+        changed=(True, True),
+    )
+    # agent ⇒ user: same, from the other executor kind.
+    _assert_mapping(
+        normalize_assignees(
+            assignee_type="user",
+            assignee_id="9",
+            current_owners=[4],
+            current_executors=["agent:a1"],
+        ),
+        owners=(9,),
+        executors=(),
+        mirror=("user", "9"),
+        changed=(True, True),
+    )
+    # user ⇒ team / agent: the stored owner must not survive as a hidden one.
+    for kind in ("team", "agent"):
+        _assert_mapping(
+            normalize_assignees(
+                assignee_type=kind,
+                assignee_id="x1",
+                current_owners=[9],
+                current_executors=[],
+            ),
+            owners=(),
+            executors=(f"{kind}:x1",),
+            mirror=(kind, "x1"),
+            changed=(True, True),
+        )
 
 
 def test_normalize_with_both_shapes_is_deterministic() -> None:
@@ -916,6 +968,71 @@ def test_legacy_pair_is_promoted_into_the_child_tables(
     assert from_agent.owners == ()
     assert from_agent.executors == ("agent:a1",)
     assert (from_agent.assignee_type, from_agent.assignee_id) == ("agent", "a1")
+
+
+def test_legacy_pair_reassignment_from_team_to_user_moves_the_mirror(
+    services: SimpleNamespace, owner: Actor
+) -> None:
+    """★ A legacy-only PATCH that re-assigns team ⇒ user must move the mirror.
+
+    The frontend still sends only ``assignee_type`` / ``assignee_id``. If the
+    lift touched the owners side alone, the stored ``team:t1`` executor would
+    survive, the mirror (``executors[0]`` first) would stay ``team`` — the card
+    would still show the team and ``infra/projects/dispatch.py`` would still
+    consider the task dispatchable.
+    """
+    project = services.project_repo.create(owner_user_id=owner.id, name="Alpha")
+    member = services.user_repo.create(username="mate", password_hash="h", role="user")
+    tasks = services.project_task_repo
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner.id,
+        assignee_type="team",
+        assignee_id="t1",
+    )
+    assert task.executors == ("team:t1",)
+
+    reassigned = tasks.update(task.id, assignee_type="user", assignee_id=str(member))
+
+    assert reassigned is not None
+    assert reassigned.owners == (member,)
+    assert reassigned.executors == ()
+    assert (reassigned.assignee_type, reassigned.assignee_id) == ("user", str(member))
+    owner_rows, executor_rows = _assignee_snapshot(services.db, task.id)
+    assert [row[1] for row in owner_rows] == [member]
+    assert executor_rows == [], "the old team executor row must be gone, not just unmirrored"
+
+
+def test_legacy_pair_reassignment_from_user_to_executor_clears_the_owner(
+    services: SimpleNamespace, owner: Actor
+) -> None:
+    """★ The reverse direction: user ⇒ agent/team must not keep a hidden owner.
+
+    The mirror would already read ``agent`` here, so only the child rows expose
+    the defect: the previous owner would stay assigned invisibly.
+    """
+    project = services.project_repo.create(owner_user_id=owner.id, name="Alpha")
+    member = services.user_repo.create(username="mate", password_hash="h", role="user")
+    tasks = services.project_task_repo
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner.id,
+        assignee_type="user",
+        assignee_id=str(member),
+    )
+    assert task.owners == (member,)
+
+    reassigned = tasks.update(task.id, assignee_type="agent", assignee_id="a1")
+
+    assert reassigned is not None
+    assert reassigned.owners == (), "the old owner must not survive the re-assignment"
+    assert reassigned.executors == ("agent:a1",)
+    assert (reassigned.assignee_type, reassigned.assignee_id) == ("agent", "a1")
+    owner_rows, executor_rows = _assignee_snapshot(services.db, task.id)
+    assert owner_rows == []
+    assert [(row[1], row[2]) for row in executor_rows] == [("agent", "a1")]
 
 
 def test_mirror_is_derived_and_cannot_be_hand_written(

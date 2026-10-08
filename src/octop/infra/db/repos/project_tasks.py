@@ -149,21 +149,32 @@ def _promote_legacy(
 ) -> tuple[tuple[int, ...], tuple[str, ...], bool, bool]:
     """Lift the withdrawn single pair into the two-sided model (PLAN §B2.3.2).
 
-    Returns ``(owners, executors, owners_touched, executors_touched)``. ``user``
-    becomes one owner, ``agent`` / ``team`` become one executor, and a given
-    ``NULL / NULL`` clears both sides — the old "clear" semantics has no other
-    faithful mapping. An unknown type, or a half pair, names no subject and is
-    treated like that clear rather than silently keeping a stale subject. Both
-    keywords unset means the pair is absent and touches neither side.
+    Returns ``(owners, executors, owners_touched, executors_touched)``. The old
+    pair carries **single-subject** semantics — one task, one assignee — so the
+    only faithful lift is a **whole-pair replacement**: ``user`` becomes the one
+    owner *and clears the executors*, ``agent`` / ``team`` becomes the one
+    executor *and clears the owners*. Either way **both** sides are touched.
+
+    Touching only the named side would keep the other side's stale rows, and
+    because the mirror is derived ``executors[0]`` first, a re-assignment from
+    ``team`` / ``agent`` to ``user`` would leave the mirror — and with it
+    dispatchability — parked on the old subject; the reverse direction would
+    leave an invisible stale owner behind.
+
+    A given ``NULL / NULL`` clears both sides for the same reason: the old
+    "clear" semantics has no other faithful mapping. An unknown type, or a half
+    pair, names no subject and is treated like that clear rather than silently
+    keeping a stale subject. Both keywords unset means the pair is absent and
+    touches neither side.
     """
     if assignee_type is UNSET and assignee_id is UNSET:
         return ((), (), False, False)
     kind = None if assignee_type is UNSET else str(assignee_type)
     ident = None if assignee_id is UNSET else assignee_id
     if kind == "user" and ident is not None:
-        return ((int(str(ident)),), (), True, False)
+        return ((int(str(ident)),), (), True, True)
     if kind in TASK_EXECUTOR_TYPES and ident:
-        return ((), (executor_ref(kind, ident),), False, True)
+        return ((), (executor_ref(kind, ident),), True, True)
     return ((), (), True, True)
 
 
@@ -185,9 +196,13 @@ def normalize_assignees(
       and order-preserving, possibly empty (empty = unassigned).
     * ``executors`` given ⇒ ``project_task_executors`` rows the same way; the two
       sides are independent and may both carry values.
-    * the legacy pair given ⇒ ``user`` is promoted to ``owners=[int(id)]``,
-      ``agent`` / ``team`` to ``executors=['<type>:<id>']`` (one side only), and
-      ``NULL / NULL`` clears both sides.
+    * the legacy pair given ⇒ the **whole pair** is replaced, because the old
+      pair means one single subject: ``user`` is promoted to
+      ``owners=[int(id)]`` **with ``executors=[]``**, ``agent`` / ``team`` to
+      ``executors=['<type>:<id>']`` **with ``owners=[]``**, and ``NULL / NULL``
+      clears both sides. Lifting only the named side would leave the other
+      side's rows standing, so a cross-side re-assignment would keep the mirror
+      (below) on the old subject.
     * a side the request does **not** name resolves to ``current_owners`` /
       ``current_executors`` and its ``*_changed`` flag is false, so that side
       keeps its rows and their ids. This is the per-side three-state contract of
