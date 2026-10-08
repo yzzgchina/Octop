@@ -11,10 +11,10 @@ specifies, and it is why archiving is owner-only while the project row survives.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from octop.api.deps import get_server, require_permission
 from octop.api.routers.project_attachments import AttachmentOut
@@ -42,6 +42,13 @@ class ProjectOut(BaseModel):
     name: str
     goal: str
     status: str = Field(description="draft | active | paused | archived")
+    task_prefix: str = Field(
+        description=(
+            "Prefix of this project's task numbers, ``<prefix>-001`` (PLAN §B1.2). "
+            "Empty only on a row the numbering migration could not backfill; a number "
+            "is then allocated from a prefix derived from the name."
+        )
+    )
     owner_user_id: int
     memory_namespace: str = Field(description="Memory namespace owned by this project.")
     kb_id: str | None = Field(description="Knowledge base bound at creation time.")
@@ -57,6 +64,7 @@ class ProjectOut(BaseModel):
             name=row.name,
             goal=row.goal,
             status=row.status,
+            task_prefix=row.task_prefix,
             owner_user_id=row.owner_user_id,
             memory_namespace=row.memory_namespace,
             kb_id=row.kb_id,
@@ -121,6 +129,28 @@ class TaskOut(BaseModel):
     status: str = Field(description="planning | todo | doing | review | done | blocked | cancelled")
     assignee_type: str | None
     assignee_id: str | None
+    task_number: str | None = Field(
+        description=(
+            "In-project number, ``<task_prefix>-001`` (PLAN §B1.2). Null only on a row "
+            "written before the numbering migration; a stored number never changes, and "
+            "editing ``task_prefix`` renumbers nothing."
+        )
+    )
+    owners: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Assigned users, in the order the client sent them; ``[]`` = unassigned. "
+            "Always an array, never null. ``project_task_owners`` is the authority — "
+            "``assignee_type`` / ``assignee_id`` are only its derived mirror."
+        ),
+    )
+    executors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Assigned ``agent:<id>`` / ``team:<id>`` subjects, in the order the client "
+            "sent them; ``[]`` = unassigned. Always an array, never null."
+        ),
+    )
     priority: int
     deps: list[str]
     thread_id: str | None
@@ -153,6 +183,9 @@ class TaskOut(BaseModel):
             status=row.status,
             assignee_type=row.assignee_type,
             assignee_id=row.assignee_id,
+            task_number=row.task_number,
+            owners=list(row.owners),
+            executors=list(row.executors),
             priority=row.priority,
             deps=list(row.deps),
             thread_id=row.thread_id,
@@ -294,6 +327,42 @@ class TimelineEventOut(BaseModel):
 # ── request bodies ───────────────────────────────────────────────────────────
 
 
+#: ``owners`` element — a positive user id (PLAN §B2.5 (c) V1). A non-integer,
+#: zero or negative value is refused by the model as a 422; it is never coerced.
+OwnerUserId = Annotated[int, Field(gt=0)]
+
+#: ``executors`` element — ``agent:<id>`` / ``team:<id>`` (PLAN §B2.1b / V2). The
+#: prefix is part of the contract: ``user:…`` belongs on the ``owners`` side and a
+#: third subject kind has no dispatcher, so both are refused as a 422.
+ExecutorRef = Annotated[str, Field(pattern=r"^(agent|team):.+$")]
+
+
+def _check_subject_payload(
+    *,
+    owners: list[int] | None,
+    executors: list[str] | None,
+    assignee_type: str | None,
+    assignee_id: str | None,
+) -> None:
+    """V3/V4 of PLAN §B2.5 (c), shared by the create and patch bodies.
+
+    V3 — the two subject arrays and the withdrawn single-valued pair
+    (``assignee_type`` / ``assignee_id``) are two encodings of one fact, so a
+    request that carries a value for both is self-contradicting: a 422 from the
+    model, never a new business code. V4 — an element repeated inside one array is
+    a shape error (the database ``UNIQUE`` constraints remain the second line of
+    defence behind this). Both are checked here rather than per route so create and
+    patch cannot drift apart.
+    """
+    if (owners is not None or executors is not None) and (
+        assignee_type is not None or assignee_id is not None
+    ):
+        raise ValueError("owners/executors cannot be combined with assignee_type/assignee_id")
+    for name, values in (("owners", owners), ("executors", executors)):
+        if values is not None and len(set(values)) != len(values):
+            raise ValueError(f"{name} must not repeat an element")
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, description="Project name; also names its knowledge base.")
     goal: str = Field(default="", description="What the project is meant to achieve.")
@@ -328,6 +397,16 @@ class ProjectPatch(BaseModel):
         default=None,
         description="Move the project along its state machine (draft|active|paused|archived).",
     )
+    task_prefix: str | None = Field(
+        default=None,
+        pattern=r"^[A-Z][A-Z0-9]{1,7}$",
+        description=(
+            "Prefix for the task numbers allocated from now on (an uppercase letter "
+            "followed by 1-7 uppercase letters or digits). An illegal value is a 422; "
+            "changing it never renumbers an existing task. The column is NOT NULL, so "
+            "an explicit null means 'leave it alone' rather than 'clear it'."
+        ),
+    )
     start_at: int | None = None
     due_at: int | None = None
     clear_start_at: bool = Field(default=False, description="Set start_at to NULL.")
@@ -353,6 +432,21 @@ class TaskCreate(BaseModel):
     parent_id: str | None = None
     assignee_type: str | None = Field(default=None, description="user | agent | team")
     assignee_id: str | None = None
+    owners: list[OwnerUserId] | None = Field(
+        default=None,
+        description=(
+            "Users to assign, by id. Omit (or send null) for none — on create there is "
+            "no earlier state, so ``[]`` means the same thing. Cannot be combined with "
+            "``assignee_type``/``assignee_id`` (422)."
+        ),
+    )
+    executors: list[ExecutorRef] | None = Field(
+        default=None,
+        description=(
+            "``agent:<id>`` / ``team:<id>`` subjects to assign. Same rules as "
+            "``owners``; the two sides are independent and may both carry values."
+        ),
+    )
     priority: int = 0
     deps: list[str] = Field(default_factory=list)
     status: str | None = Field(
@@ -379,6 +473,17 @@ class TaskCreate(BaseModel):
             raise ValueError("title must not be blank")
         return value
 
+    @model_validator(mode="after")
+    def _subjects_are_consistent(self) -> TaskCreate:
+        """V3/V4 on the create body (PLAN §B2.5 (c))."""
+        _check_subject_payload(
+            owners=self.owners,
+            executors=self.executors,
+            assignee_type=self.assignee_type,
+            assignee_id=self.assignee_id,
+        )
+        return self
+
 
 class TaskPatch(BaseModel):
     title: str | None = None
@@ -386,6 +491,18 @@ class TaskPatch(BaseModel):
     parent_id: str | None = None
     assignee_type: str | None = None
     assignee_id: str | None = None
+    owners: list[OwnerUserId] | None = Field(
+        default=None,
+        description=(
+            "Users to assign, by id. Three states (PLAN §B2.5 (a)): omitted = leave the "
+            "owners as they are, ``[]`` = clear them, a non-empty array = replace the "
+            "whole set. Cannot be combined with ``assignee_type``/``assignee_id`` (422)."
+        ),
+    )
+    executors: list[ExecutorRef] | None = Field(
+        default=None,
+        description="``agent:<id>`` / ``team:<id>``; same three states as ``owners``.",
+    )
     priority: int | None = None
     deps: list[str] | None = None
     start_at: int | None = Field(default=None, description="Planned start, unix seconds.")
@@ -402,6 +519,17 @@ class TaskPatch(BaseModel):
             "planning | todo | doing | review | done | blocked | cancelled."
         ),
     )
+
+    @model_validator(mode="after")
+    def _subjects_are_consistent(self) -> TaskPatch:
+        """V3/V4 on the patch body — the same guard as create, so neither drifts."""
+        _check_subject_payload(
+            owners=self.owners,
+            executors=self.executors,
+            assignee_type=self.assignee_type,
+            assignee_id=self.assignee_id,
+        )
+        return self
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -548,6 +676,10 @@ async def patch_project(
         elif value is not None:
             fields[key] = value
     sent = body.model_dump(exclude_unset=True)
+    if sent.get("task_prefix") is not None:
+        # ``projects.task_prefix`` is NOT NULL, so an explicit null is not a "clear"
+        # state: it leaves the stored prefix alone (the model documents that).
+        fields["task_prefix"] = body.task_prefix
     if "kb_id" in sent:
         # Three states: absent (untouched) / null (unbind) / value (rebind). Passing
         # it in the same call is what makes the whole request MANAGE_CONFIG.
@@ -659,7 +791,16 @@ async def create_task(
     ``tags`` / ``custom_fields`` / ``attachment_ids`` are applied by the four-step
     orchestration in :meth:`ProjectService.create_task` (PLAN.md §2.3): a refused
     request rolls back the whole task rather than silently dropping the metadata.
+
+    ``owners`` / ``executors`` become the task's subject rows through the repo's one
+    normalization point; a side the request does not name simply has no rows (there
+    is no earlier state on create).
     """
+    subjects: dict[str, object] = {}
+    for key in ("owners", "executors"):
+        value = getattr(body, key)
+        if value is not None:
+            subjects[key] = value
     task = _service(server).create_task(
         project_id,
         user=_actor(user),
@@ -676,6 +817,7 @@ async def create_task(
         tags=body.tags,
         custom_fields=body.custom_fields,
         attachment_ids=body.attachment_ids,
+        **subjects,
     )
     return _task_out(server, _service(server), task)
 
@@ -697,6 +839,9 @@ async def patch_task(
     set, not a merge) and are applied through their own services — a patch that
     includes them must not return 200 while dropping them. ``exclude_unset`` is
     what makes "omitted" different from "explicitly empty".
+
+    ``owners`` / ``executors`` follow the frozen three states (PLAN §B2.5 (a)):
+    omitted = leave that side alone, ``[]`` = clear it, non-empty = replace it whole.
     """
     service = _service(server)
     actor = _actor(user)
@@ -705,6 +850,12 @@ async def patch_task(
         service.transition_task(project_id, task_id, user=actor, target=body.status)
 
     fields = body.model_dump(exclude_unset=True, exclude={"status", "tags", "custom_fields"})
+    # A subject side the request omits — or sends as null, which the frozen shape does
+    # not define as a value — is left alone; ``[]`` clears it and a non-empty array
+    # replaces it. An explicit null must not reach the repo, whose sentinel is UNSET.
+    for key in ("owners", "executors"):
+        if fields.get(key) is None:
+            fields.pop(key, None)
     if fields:
         service.update_task(project_id, task_id, user=actor, **fields)
     if body.tags is not None:
