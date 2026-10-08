@@ -114,11 +114,30 @@ class AssigneeMapping:
     executors_changed: bool
 
 
+def _user_id_or_reject(value: object) -> int:
+    """``int`` for an assignee user id, or the named refusal — never a bare ``ValueError``.
+
+    ``assignee_type='user'`` with a non-numeric id used to raise ``ValueError`` out of
+    ``normalize_assignees``; the catch-all handler turned that into a 500 for what is a
+    plain caller error. One code covers both illegal-assignee shapes (non-numeric here,
+    no ``users`` row in ``_assert_owners_exist``) because the contract asks for **a**
+    named code at 422 (lead ruling ``f2-repo-octoperror``, 2026-10-08).
+    """
+    try:
+        return int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise OctopError(
+            ErrorCode.PROJECT_TASK_ASSIGNEE_INVALID,
+            f"assignee user id must be an integer: {value!r}",
+            details={"assignee_id": str(value)},
+        ) from exc
+
+
 def _dedupe_owners(values: Iterable[object]) -> tuple[int, ...]:
     """Array order with duplicates removed (first occurrence wins)."""
     unique: list[int] = []
     for value in values:
-        user_id = int(str(value))
+        user_id = _user_id_or_reject(value)
         if user_id not in unique:
             unique.append(user_id)
     return tuple(unique)
@@ -164,15 +183,16 @@ def _promote_legacy(
     A given ``NULL / NULL`` clears both sides for the same reason: the old
     "clear" semantics has no other faithful mapping. An unknown type, or a half
     pair, names no subject and is treated like that clear rather than silently
-    keeping a stale subject. Both keywords unset means the pair is absent and
-    touches neither side.
+    keeping a stale subject. A ``user`` id that is not an integer is refused with
+    ``PROJECT_TASK_ASSIGNEE_INVALID`` (F2) instead of escaping as a ``ValueError``.
+    Both keywords unset means the pair is absent and touches neither side.
     """
     if assignee_type is UNSET and assignee_id is UNSET:
         return ((), (), False, False)
     kind = None if assignee_type is UNSET else str(assignee_type)
     ident = None if assignee_id is UNSET else assignee_id
     if kind == "user" and ident is not None:
-        return ((int(str(ident)),), (), True, True)
+        return ((_user_id_or_reject(ident),), (), True, True)
     if kind in TASK_EXECUTOR_TYPES and ident:
         return ((), (executor_ref(kind, ident),), True, True)
     return ((), (), True, True)
@@ -533,7 +553,34 @@ class ProjectTaskRepo:
         ]
 
     @staticmethod
-    def _replace_assignees(conn: Any, task_id: str, mapping: AssigneeMapping) -> None:
+    def _assert_owners_exist(conn: Any, user_ids: tuple[int, ...]) -> None:
+        """Soft-FK check for ``project_task_owners.user_id`` (F2, PLAN §B2.3.1).
+
+        ``REFERENCES users(id)`` is the schema's backstop, but its violation arrives
+        as a dialect-specific ``IntegrityError`` and the catch-all handler turns that
+        into a 500 — while an assignee id that names no user is a plain caller error.
+        The check therefore runs here, on the caller's transaction, *before* the
+        INSERT: it names every missing id and refuses the whole write (the caller's
+        transaction rolls back), and it leaves the ``UNIQUE(task_id, user_id)``
+        backstop failing loudly as its docstring promises.
+        """
+        if not user_ids:
+            return
+        placeholders = sql_in_placeholders(len(user_ids))
+        rows = conn.execute(
+            f"SELECT id FROM users WHERE id IN ({placeholders})", list(user_ids)
+        ).fetchall()
+        known = {int(r["id"]) for r in rows}
+        missing = [user_id for user_id in user_ids if user_id not in known]
+        if missing:
+            raise OctopError(
+                ErrorCode.PROJECT_TASK_ASSIGNEE_INVALID,
+                f"assignee user id(s) {missing} do not exist",
+                details={"missing_user_ids": missing},
+            )
+
+    @classmethod
+    def _replace_assignees(cls, conn: Any, task_id: str, mapping: AssigneeMapping) -> None:
         """Write the sides the request named, inside the caller's transaction.
 
         Delete a named side, then insert its final rows in array order: the stored
@@ -546,6 +593,7 @@ class ProjectTaskRepo:
         being silently swallowed).
         """
         if mapping.owners_changed:
+            cls._assert_owners_exist(conn, mapping.owners)
             conn.execute("DELETE FROM project_task_owners WHERE task_id = ?", (task_id,))
             for user_id in mapping.owners:
                 conn.execute(

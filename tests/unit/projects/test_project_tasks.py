@@ -6,11 +6,15 @@ leave exactly one well-formed row.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
+from tests.support.app import octop_client
+from tests.support.auth import auth_header, bootstrap_admin
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
@@ -1132,3 +1136,76 @@ def test_task_rows_expose_both_subject_sides(services: SimpleNamespace, owner: A
 
     listed = services.project_task_repo.list_by_project(project.id)
     assert [(t.id, t.owners, t.executors) for t in listed] == [(task.id, (member,), ("team:t1",))]
+
+
+# ── F2: an illegal legacy assignee pair is a **named 422**, never a 500 ───────
+#
+# Lead ruling ``f2-repo-octoperror`` (2026-10-08): the repo layer converts both
+# illegal ``assignee`` shapes -- a non-numeric ``user`` id (a bare ``ValueError``
+# out of ``normalize_assignees``) and a numeric ``user`` id with no ``users`` row
+# (an ``IntegrityError`` out of the ``REFERENCES users(id)`` foreign key) -- into
+# ``OctopError``. Both are driven over the wire here because the contract is an
+# HTTP status: with the conversion removed, the catch-all handler answers
+# ``500 INTERNAL_ERROR`` and these tests go red.
+
+PROJECTS = "/api/projects"
+
+
+@pytest.fixture
+async def api(tmp_octop_home: Path) -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]]]:
+    async with octop_client(tmp_octop_home) as (client, _srv):
+        await bootstrap_admin(client, tmp_octop_home)
+        yield client, await auth_header(client)
+
+
+async def _new_project(client: httpx.AsyncClient, auth: dict[str, str], name: str) -> str:
+    response = await client.post(PROJECTS, headers=auth, json={"name": name})
+    assert response.status_code == 201, response.text
+    return str(response.json()["project_id"])
+
+
+async def test_a_non_numeric_user_assignee_is_422_with_the_named_code(
+    api: tuple[httpx.AsyncClient, dict[str, str]],
+) -> None:
+    """``assignee_type='user'`` with a non-numeric id: 422, named code, no task."""
+    client, auth = api
+    project_id = await _new_project(client, auth, "Alpha")
+
+    response = await client.post(
+        f"{PROJECTS}/{project_id}/tasks",
+        headers=auth,
+        json={
+            "title": "Assigned to nobody",
+            "assignee_type": "user",
+            "assignee_id": "not-a-number",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.status_code != 500, "an illegal assignee id is a caller error, not a fault"
+    assert response.json()["error"]["code"] == "PROJECT_TASK_ASSIGNEE_INVALID", response.text
+    # The refusal is total: no half-built task is left behind.
+    board = await client.get(f"{PROJECTS}/{project_id}/tasks", headers=auth)
+    assert board.status_code == 200, board.text
+    assert board.json() == []
+
+
+async def test_a_user_assignee_with_no_users_row_is_422_with_the_named_code(
+    api: tuple[httpx.AsyncClient, dict[str, str]],
+) -> None:
+    """A numeric id that names no ``users`` row: 422 with the code, not a FK 500."""
+    client, auth = api
+    project_id = await _new_project(client, auth, "Alpha")
+
+    response = await client.post(
+        f"{PROJECTS}/{project_id}/tasks",
+        headers=auth,
+        json={"title": "Ghost owner", "assignee_type": "user", "assignee_id": "987654321"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.status_code != 500, "a missing user is a caller error, not a foreign-key fault"
+    assert response.json()["error"]["code"] == "PROJECT_TASK_ASSIGNEE_INVALID", response.text
+    board = await client.get(f"{PROJECTS}/{project_id}/tasks", headers=auth)
+    assert board.status_code == 200, board.text
+    assert board.json() == []
