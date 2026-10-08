@@ -136,6 +136,10 @@ DOC_TRIAGE = {
 #   ★ 其余 8 条的声明来源是 **`PLAN §2`**（★ 按 `T-AUDIT-GATE` 卡面「选 3~5 条与安全/数据相关的」✓）
 #   ⇒ ★★ 它们**不在**那 132 条的索引里 ✗ ⇒ ★★ **不能**拿它们去冲抵「39」✗。
 #
+#   ★★ 与 `registry.FROZEN_IDS`（21 条 = 全部冻结判据）的关系 = **子集**（✓ 见 `--self-test` ④）：
+#   ★ 本表只登记【声明可溯的已实现判据】⇒ ★★ **不要求**逐条对齐 `FROZEN_IDS`✗ ——
+#   ★ `AUD-C1…C11` 属【另一条谱系】（29 条判据 · 不可溯到 132 条清单）⇒ **不进**本表 ✓。
+#
 IMPLEMENTED = (
     (
         "AUD-1",
@@ -256,7 +260,8 @@ def build(text):
 
 # ─── 自检（★ 阳性对照 —— ★ 计数类读数【必须】带它，否则「扫描器坏了 ⇒ 命中 0」会被读成绿 ✓）──
 def self_test(text):
-    """★ 三组对照：① 与独立 `grep` 口径一致 · ② 注入必须被看见 · ③ 注入进【未分流】节不得进甲。"""
+    """★ 四组对照：① 与独立 `grep` 口径一致 · ② 注入必须被看见 · ③ 注入进【未分流】节不得进甲
+    · ④ `IMPLEMENTED` 登记了【不存在】的判据 id 必须返红（★ 子集断言 ✓）。"""
     checks = []
 
     base = build(text)
@@ -306,22 +311,39 @@ def self_test(text):
         )
     )
 
-    # ④ 冻结 id 集合必须与 registry 一致（★ 防「实现了没登记 / 登记了没实现」漂移）
+    # ④ ★★ 子集断言（★ 刻意【不】写成集合相等 ✗）：`IMPLEMENTED` 不得登记一个【不存在】的判据 id ✓
+    #   ★★ 为什么不是相等：★ `FROZEN_IDS` 里的 `AUD-C1…C11` 属【另一条谱系】（29 条判据 · 不可溯到
+    #   132 条清单）⇒ ★ 把它们塞进 `IMPLEMENTED` 会污染那张表的语义（该表只登记【声明可溯】的 ✗）。
+    #   ⇒ ★★ 「登记了不存在的 id」= 红 ✓（判别力所在）·「哪些冻结 id 未被登记」= **信息行**（不是失败 ✓）。
     sys.path.insert(0, str(REPO))
     from scripts.audit import registry as reg
 
-    ok4 = {cid for cid, _, _, _ in IMPLEMENTED} == set(reg.FROZEN_IDS)
+    impl_ids = {cid for cid, _, _, _ in IMPLEMENTED}
+    frozen = set(reg.FROZEN_IDS)
+    ok4 = impl_ids <= frozen
+    #   ★★ 反例对照（★ 同 ② / ③ 的注入纪律）：★ 这条断言**不得**永真 ⇒
+    #   注入一个不存在的 id（`AUD-NOPE`）后【必须】翻红 ✓
+    ok4_neg = not ((impl_ids | {"AUD-NOPE"}) <= frozen)
     checks.append(
         (
-            "IMPLEMENTED 与 registry.FROZEN_IDS 一致",
-            ok4,
-            f"差集 = {sorted({c for c, _, _, _ in IMPLEMENTED} ^ set(reg.FROZEN_IDS)) or '空'}",
+            "IMPLEMENTED 登记的 id 都在 registry.FROZEN_IDS 内（★ 子集 · 不必相等）",
+            ok4 and ok4_neg,
+            f"IMPLEMENTED {len(impl_ids)} 条 vs 冻结 {len(frozen)} 条"
+            f" · 越界（不存在的 id）= {sorted(impl_ids - frozen) or '空'}"
+            f" · 反例注入 AUD-NOPE ⇒ {'红 ✓' if ok4_neg else '★ 未翻红'}",
         )
     )
+    # ★★ 信息行（★ 不是失败 ✓）：冻结 id 里【未】被 `IMPLEMENTED` 登记的那些 —— ★ 属另一条谱系 ✓
+    unregistered = [cid for cid in reg.FROZEN_IDS if cid not in impl_ids]
 
     print("★ 自检（阳性对照 · 判别性对照）")
     for name, ok_, detail in checks:
         print(f"  [{'PASS' if ok_ else 'FAIL'}] {name} · {detail}")
+    print(
+        f"  ★ 未被 IMPLEMENTED 登记的冻结判据 {len(unregistered)} 条："
+        f"{' · '.join(unregistered) or '无'}"
+        "（★ 另一条谱系 · 不可溯到 132 条清单 ⇒ 不登记 ✓）"
+    )
     failed = [n for n, ok_, _ in checks if not ok_]
     print(f"★ 汇总：{len(checks) - len(failed)}/{len(checks)} PASS")
     return 0 if not failed else 3
