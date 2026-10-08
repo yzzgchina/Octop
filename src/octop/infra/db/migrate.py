@@ -1743,6 +1743,28 @@ def _task_number(prefix: str, seq: int) -> str:
     return f"{prefix}-{seq:03d}" if seq <= 999 else f"{prefix}-{seq:04d}"
 
 
+def _exclude_unrepresentable_sql(dialect: str) -> str:
+    """The ``AND NOT (…)`` guard dropping assignees no child row can hold.
+
+    ★ One source of truth for the two dialect spellings: ``_backfill_project_task_numbering``
+    and the cross-dialect equivalence test both call *this* function, so the test
+    cannot become a second copy of the predicate -- the project's #1 rework source
+    is one fact living in several places.
+
+    ``dialect`` is ``DatabasePool.dialect``: ``"postgresql"`` or (else) SQLite.
+    """
+    if dialect == "postgresql":
+        return (
+            " AND NOT (t.assignee_type = 'user' AND CASE WHEN t.assignee_id ~ '^[0-9]+$'"
+            " THEN (CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users)) ELSE FALSE END)"
+        )
+    return (
+        " AND NOT (t.assignee_type = 'user' AND t.assignee_id <> ''"
+        " AND t.assignee_id NOT GLOB '*[^0-9]*'"
+        " AND CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users))"
+    )
+
+
 def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
     """Backfill the v27 task-numbering data, idempotently.
 
@@ -1886,17 +1908,7 @@ def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
         # Tasks that already carry a mapping are skipped, so a re-run reads and
         # writes nothing at all (the "0 rows" idempotency judgement).
         valid_users = {int(row["id"]) for row in conn.execute("SELECT id FROM users").fetchall()}
-        if db.dialect == "postgresql":
-            exclude_unrepresentable = (
-                " AND NOT (t.assignee_type = 'user' AND CASE WHEN t.assignee_id ~ '^[0-9]+$'"
-                " THEN (CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users)) ELSE FALSE END)"
-            )
-        else:
-            exclude_unrepresentable = (
-                " AND NOT (t.assignee_type = 'user' AND t.assignee_id <> ''"
-                " AND t.assignee_id NOT GLOB '*[^0-9]*'"
-                " AND CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users))"
-            )
+        exclude_unrepresentable = _exclude_unrepresentable_sql(db.dialect)
         for row in conn.execute(
             "SELECT t.task_id, t.assignee_type, t.assignee_id FROM project_tasks t"
             " WHERE t.assignee_type IS NOT NULL AND t.assignee_id IS NOT NULL"

@@ -17,11 +17,15 @@ Uses ``tmp_path`` throughout so the suite runs on Windows and POSIX alike.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 from pathlib import Path
+from typing import Any
 
+import psycopg
 import pytest
+from tests.support.postgresql import requires_postgresql
 
 from octop.infra.db import migrate
 from octop.infra.db.migrate import _backfill_project_task_numbering, run_migrations
@@ -486,3 +490,103 @@ def test_the_pair_is_self_contained_on_both_dialects():
             assert body.upper().startswith(
                 ("ALTER TABLE", "CREATE TABLE", "CREATE UNIQUE INDEX", "CREATE INDEX", "UPDATE")
             ), body
+
+
+# ── the exclude predicate: cross-dialect equivalence (P0-6-R1) ───────────────
+
+
+# ★ The predicate is NEVER re-typed here: both tests build their SQL by calling
+# ``migrate._exclude_unrepresentable_sql`` -- the same single source of truth the
+# migration itself calls. Only the surrounding SELECT is local, and it is
+# trimmed to the parts the predicate needs (its ``t`` alias and a ``users``
+# table): the migration's ``NOT EXISTS`` child-table guards cannot change which
+# assignees the predicate admits, since they are true for every task before the
+# first backfill pass.
+ASSIGNEE_SELECT = (
+    "SELECT t.task_id, t.assignee_id FROM project_tasks t"
+    " WHERE t.assignee_type IS NOT NULL AND t.assignee_id IS NOT NULL"
+)
+# The DIRTY_USER_IDS matrix plus its boundaries: '9999' is well-formed but names
+# no ``users`` row, while '7' and '07' both map to the one seeded user.
+ASSIGNEE_MATRIX = (*DIRTY_USER_IDS, "7", "07", "9999")
+# Row-by-row verdict both dialects must produce.
+EXPECTED_KEPT: dict[str, bool] = {
+    "7_0": True,
+    " 7 ": True,
+    "٧": True,
+    "": True,
+    "abc": True,
+    "+7": True,
+    "7.0": True,
+    "7": True,
+    "07": True,
+    "9999": False,
+}
+SEEDED_USER_ID = 7
+
+
+def _placeholder(dialect: str) -> str:
+    return "%s" if dialect == "postgresql" else "?"
+
+
+def _seed_assignee_matrix(conn: Any, dialect: str) -> None:
+    """``users`` holds one row (id 7); ``project_tasks`` holds the matrix.
+
+    PostgreSQL gets ``CREATE TEMP TABLE`` -- session-scoped objects only, nothing
+    persistent is created and nothing pre-existing is touched.
+    """
+    temp = "TEMP " if dialect == "postgresql" else ""
+    mark = _placeholder(dialect)
+    conn.execute(f"CREATE {temp}TABLE users (id INTEGER PRIMARY KEY)")
+    conn.execute(
+        f"CREATE {temp}TABLE project_tasks"
+        "(task_id TEXT PRIMARY KEY, assignee_type TEXT, assignee_id TEXT)"
+    )
+    conn.execute(f"INSERT INTO users (id) VALUES ({mark})", (SEEDED_USER_ID,))
+    for index, raw in enumerate(ASSIGNEE_MATRIX):
+        conn.execute(
+            f"INSERT INTO project_tasks (task_id, assignee_type, assignee_id)"
+            f" VALUES ({mark}, 'user', {mark})",
+            (f"task_{index}", raw),
+        )
+
+
+def _kept_assignee_ids(conn: Any, dialect: str) -> list[str]:
+    """The raw ids the production predicate admits, on this live connection."""
+    where = migrate._exclude_unrepresentable_sql(dialect)
+    rows = conn.execute(f"{ASSIGNEE_SELECT}{where}").fetchall()
+    return sorted(str(row[1]) for row in rows)
+
+
+def _assert_matrix_partition(kept: list[str]) -> None:
+    """The one verdict both dialects must agree on, row by row.
+
+    Keying on ``ASSIGNEE_MATRIX`` (which must contain ``DIRTY_USER_IDS``) means a
+    drift in either list fails here instead of silently reducing coverage.
+    """
+    assert {raw: raw in kept for raw in ASSIGNEE_MATRIX} == EXPECTED_KEPT
+
+
+def test_exclude_unrepresentable_sql_keeps_the_matrix_on_sqlite():
+    """The always-on half: a real in-memory SQLite database, no DSN needed."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        _seed_assignee_matrix(conn, "sqlite")
+        kept = _kept_assignee_ids(conn, "sqlite")
+    finally:
+        conn.close()
+    _assert_matrix_partition(kept)
+
+
+@requires_postgresql
+def test_exclude_unrepresentable_sql_is_equivalent_on_postgresql():
+    """The PG branch, row-by-row equal to the SQLite verdict.
+
+    One ``CREATE TEMP TABLE`` pair in a ``postgres``-database session: no
+    persistent table, role or database is created and no schema is dropped, so
+    without ``OCTOP_TEST_DATABASE_URL`` this skips cleanly instead of erroring.
+    """
+    with psycopg.connect(os.environ["OCTOP_TEST_DATABASE_URL"]) as conn:
+        _seed_assignee_matrix(conn, "postgresql")
+        kept = _kept_assignee_ids(conn, "postgresql")
+    _assert_matrix_partition(kept)
