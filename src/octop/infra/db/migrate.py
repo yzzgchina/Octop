@@ -1878,13 +1878,18 @@ def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
         # only keeps dirty ids in the set for ``invalid_skipped``). ``NUMERIC``
         # rather than ``INTEGER`` so an over-long id skips instead of
         # overflowing, and '07' stays mappable on both dialects.
+        # ★ ``P0-3-R1`` (2026-10-08): PostgreSQL spells this as
+        # ``CASE WHEN … THEN (NOT IN …) ELSE FALSE END`` -- with ``NOT IN`` left
+        # outside the ``CASE`` the whole predicate is NULL whenever the regex
+        # misses, and ``WHERE NOT (…)`` admits only TRUE, so every dirty id was
+        # dropped from the set (a dialect fork against SQLite).
         # Tasks that already carry a mapping are skipped, so a re-run reads and
         # writes nothing at all (the "0 rows" idempotency judgement).
         valid_users = {int(row["id"]) for row in conn.execute("SELECT id FROM users").fetchall()}
         if db.dialect == "postgresql":
             exclude_unrepresentable = (
                 " AND NOT (t.assignee_type = 'user' AND CASE WHEN t.assignee_id ~ '^[0-9]+$'"
-                " THEN CAST(t.assignee_id AS NUMERIC) END NOT IN (SELECT id FROM users))"
+                " THEN (CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users)) ELSE FALSE END)"
             )
         else:
             exclude_unrepresentable = (
