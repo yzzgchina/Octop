@@ -33,23 +33,35 @@ vi.mock("react-i18next", async (importOriginal) => {
     );
   };
 
+  // ★ P1-16（B 类序号 16）：``t`` / ``i18n`` / 返回对象必须是**单例**。
+  //
+  // 此前是 ``useTranslation: () => ({ t: (…) => … })`` —— 每次调用**新建箭头函数**，
+  // 于是每次渲染都拿到新的 ``t`` 引用。调用方普遍写
+  // ``useCallback(async () => …, [projectId, t])``（见 ``pages/Projects/ProjectsPage.tsx``
+  // 与 ``pages/Projects/Detail/ProjectMemoryTab.tsx``）：``t`` 一变 ⇒ 回调一变 ⇒
+  // 依赖它的 ``useEffect`` 每次渲染都重取（再写 state 就是无限重取）。
+  // 真 i18next 在语言不变时返回**稳定**引用，所以旧 mock 让**测试**里的行为与线上不一致。
+  // 判据：``dashboard/src/test/i18nMockStability.test.tsx``（引用相等 + effect 只跑一次）。
+  const t = (
+    key: string,
+    fallback?: string | TOptions,
+    options?: TOptions,
+  ): string => {
+    if (typeof fallback === "string") return interpolate(fallback, options);
+    if (fallback && typeof fallback === "object") {
+      const template = fallback.defaultValue ?? key;
+      return interpolate(template, fallback);
+    }
+    return key;
+  };
+
+  const i18n = { language: "zh", changeLanguage: () => Promise.resolve() };
+
+  const useTranslation = () => ({ t, i18n });
+
   return {
     ...actual,
-    useTranslation: () => ({
-      t: (
-        key: string,
-        fallback?: string | TOptions,
-        options?: TOptions,
-      ): string => {
-        if (typeof fallback === "string") return interpolate(fallback, options);
-        if (fallback && typeof fallback === "object") {
-          const template = fallback.defaultValue ?? key;
-          return interpolate(template, fallback);
-        }
-        return key;
-      },
-      i18n: { language: "zh", changeLanguage: () => Promise.resolve() },
-    }),
+    useTranslation,
     Trans: ({ children }: { children?: React.ReactNode }) => children,
   };
 });
