@@ -254,8 +254,11 @@ test-live:
 # and kept full for accuracy) plus only the tests affected by changed files via
 # pytest-testmon. The full suite still runs in CI (`make all`); this is local
 # feedback only, so a missed cross-module impact is caught there.
+# ★ `P1-9`：`test-frontend` 也在本目标里 —— 前端**没有**等价的 testmon 选择器，
+#   所以 dashboard 套件每次提交都**全量**跑一遍（本机实测 ≈ 27s，225 文件 / 1428 用例）。
+#   这是**有意的阻断**：前端红 ⇒ 钩子非 0 ⇒ 提交被挡（不是提示）。
 .PHONY: precommit
-precommit: format-all lint lint-frontend typecheck test-affected
+precommit: format-all lint lint-frontend typecheck test-affected test-frontend
 
 # NOTE: do NOT pass `-m` here — pytest-testmon deactivates its affected-test
 # selection whenever a marker expression is present, which would fall back to
