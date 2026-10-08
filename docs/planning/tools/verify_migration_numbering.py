@@ -1,30 +1,47 @@
-# -*- coding: utf-8 -*-
-"""Verify migration numbering after the 018 -> 019 renumber.
+"""Verify migration numbering — branch-agnostic, no hard-coded version.
 
-Run this after resolving the rebase onto upstream/develop. It catches the three
-ways the renumber can be silently half-done:
+Run this after every rebase / merge onto a moving ``develop``. The version
+ceiling is **read from ``src/octop/infra/db/migrations/``**, never pinned, so the
+same script is valid on any branch at any water level (025 on
+``fix/audit-directions-3to6``, 027 on ``feature/task-card-content-fixups``, ...).
 
-  1. two migrations sharing a version number (``_discover`` raises at runtime,
-     so this would break every DB operation, not just one test)
-  2. a migration file whose *watermark* does not match its filename prefix
-  3. the fixups that always follow a version bump -- the ``if version == N``
-     branch, the idempotent helper, and the ~16 test assertions
+Kept discriminations — each of these turns the script red:
+
+  1. two migrations sharing a (version, dialect) pair — ``migrate._discover``
+     raises at runtime, so this breaks every DB operation, not just one test
+  2. a gap in the ``001..max`` sequence (e.g. 017 missing between 001 and 025)
+  3. an unpaired migration — ``00N_x.sql`` without ``00N_x.pg.sql`` (or vice
+     versa), including a stem mismatch between the two dialects
+  4. a migration whose embedded ``_schema_version`` watermark disagrees with its
+     own filename prefix (``001_initial`` legitimately carries no watermark)
+  5. the schema-version assertions in ``tests/unit/db/test_db_pool.py`` not
+     bumped to the current max — the fixup that always follows a new migration
+
+Retired on purpose (this is why the ceiling became dynamic): the 018 -> 019
+renumber fixups — the hard-coded ``019_projects`` pair, ``migrate.py`` wired to
+``19``, and "no test asserts 18". They could only ever be true for one branch at
+one instant, and they are renumber-specific rather than numbering checks. In
+particular "the migrate helper is wired to the max version" is *not* an
+invariant: 025_team_runs on this branch has no ``if version == 25`` helper and
+relies on the generic ``_discover`` loop.
+
+Usage::
+
+    python docs/planning/tools/verify_migration_numbering.py [repo_root]
+
+``repo_root`` defaults to the repository this script lives in.
 """
+
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-REPO = Path(__file__).resolve().parents[3]
-MIGRATIONS = REPO / "src/octop/infra/db/migrations"
-MIGRATE_PY = REPO / "src/octop/infra/db/migrate.py"
-
-EXPECTED_MAX = 19
-PROJECT_FILES = ("019_projects.sql", "019_projects.pg.sql")
+DIALECTS = ("sqlite", "postgresql")
+TEST_DB_POOL = "tests/unit/db/test_db_pool.py"
 
 failures: list[str] = []
 
@@ -35,79 +52,127 @@ def ok(label: str, passed: bool, detail: str = "") -> None:
     print(f"  [{'OK ' if passed else 'FAIL'}] {label}{(' -- ' + detail) if detail else ''}")
 
 
-def discover_versions() -> dict[tuple[int, str], list[str]]:
-    """Group by (version, dialect) — ``_discover`` treats the pair as one migration."""
-    seen: dict[tuple[int, str], list[str]] = {}
-    for path in sorted(MIGRATIONS.iterdir()):
-        m = re.match(r"^(\d{3})_.*\.sql$", path.name)
-        if m:
-            dialect = "postgresql" if path.name.endswith(".pg.sql") else "sqlite"
-            seen.setdefault((int(m.group(1)), dialect), []).append(path.name)
-    return seen
+def repo_root(argv: list[str]) -> Path:
+    if len(argv) > 1:
+        return Path(argv[1]).expanduser().resolve()
+    # docs/planning/tools/<this file> -> repository root
+    return Path(__file__).resolve().parents[3]
+
+
+def collect(migrations: Path) -> dict[int, dict[str, list[str]]]:
+    """Map ``version -> dialect -> stems``.
+
+    The dialect split mirrors ``migrate._discover``: ``*.pg.sql`` is PostgreSQL
+    and is not also counted as SQLite; every other ``NNN_*.sql`` is SQLite.
+    """
+    table: dict[int, dict[str, list[str]]] = {}
+    if not migrations.is_dir():
+        return table
+    for path in sorted(migrations.iterdir()):
+        name = path.name
+        if not name.endswith(".sql"):
+            continue
+        m = re.match(r"^(\d{3})_(.*)\.sql$", name)
+        if not m:
+            continue
+        version = int(m.group(1))
+        stem = m.group(2)
+        dialect = "sqlite"
+        if stem.endswith(".pg"):
+            stem = stem[: -len(".pg")]
+            dialect = "postgresql"
+        table.setdefault(version, {}).setdefault(dialect, []).append(stem)
+    for per_dialect in table.values():
+        for stems in per_dialect.values():
+            stems.sort()
+    return table
+
+
+def file_name(version: int, dialect: str, stem: str) -> str:
+    return f"{version:03d}_{stem}" + (".pg.sql" if dialect == "postgresql" else ".sql")
 
 
 def main() -> int:
-    print("1) one migration per (version, dialect)")
-    versions = discover_versions()
-    dupes = {k: names for k, names in versions.items() if len(names) > 1}
+    root = repo_root(sys.argv)
+    migrations = root / "src/octop/infra/db/migrations"
+    test_db_pool = root / TEST_DB_POOL
+    print(f"repo root : {root}")
+    print(f"migrations: {migrations}")
+
+    table = collect(migrations)
+    ok("migration directory is readable and non-empty", bool(table), f"versions={len(table)}")
+
+    print("1) one migration per (version, dialect)   [mirrors migrate._discover]")
+    dupes = {
+        f"{version:03d}/{dialect}": stems
+        for version, per_dialect in table.items()
+        for dialect, stems in per_dialect.items()
+        if len(stems) > 1
+    }
     ok("no duplicate version numbers", not dupes, str(dupes) if dupes else "")
-    top = max((v for v, _ in versions), default=0)
-    ok(f"max version is {EXPECTED_MAX}", top == EXPECTED_MAX, f"got {top}")
 
-    print("2) the project migration pair exists and is numbered 019")
-    for name in PROJECT_FILES:
-        ok(f"{name} exists", (MIGRATIONS / name).exists())
-    ok("no stale 018_projects file",
-       not list(MIGRATIONS.glob("018_projects*")))
+    print("2) the version sequence is contiguous from 001 (no gap)")
+    gaps: dict[str, list[str]] = {}
+    ceilings: dict[str, int] = {}
+    for dialect in DIALECTS:
+        present = sorted(v for v, per in table.items() if dialect in per)
+        ceilings[dialect] = present[-1] if present else 0
+        missing = sorted(set(range(1, ceilings[dialect] + 1)) - set(present))
+        if missing:
+            gaps[dialect] = [f"{v:03d}" for v in missing]
+    ok("no gap in the version sequence", not gaps, str(gaps) if gaps else "")
 
-    print("3) watermark matches the filename prefix")
-    for name in PROJECT_FILES:
-        path = MIGRATIONS / name
-        if not path.exists():
-            ok(f"{name} watermark", False, "file missing")
-            continue
-        text = path.read_text(encoding="utf-8")
-        m = re.search(r"UPDATE _schema_version SET version = (\d+);", text)
-        ok(f"{name} sets version {EXPECTED_MAX}", bool(m) and int(m.group(1)) == EXPECTED_MAX,
-           f"got {m.group(1) if m else 'none'}")
+    print("3) every NNN_<stem>.sql has a matching NNN_<stem>.pg.sql, and vice versa")
+    unpaired = {
+        f"{version:03d}": f"sqlite={per.get('sqlite', [])} postgresql={per.get('postgresql', [])}"
+        for version, per in sorted(table.items())
+        if per.get("sqlite", []) != per.get("postgresql", [])
+    }
+    ok("sqlite/postgresql pairs match by stem", not unpaired, str(unpaired) if unpaired else "")
 
-    print("4) migrate.py is wired to 019")
-    src = MIGRATE_PY.read_text(encoding="utf-8")
-    ok("helper reads 019_projects.pg.sql",
-       '"019_projects.pg.sql"' in src)
-    ok("watermark replace targets 19",
-       '.replace(\n        "UPDATE _schema_version SET version = 19;", ""\n    )' in src
-       or '"UPDATE _schema_version SET version = 19;"' in src)
-    ok("sqlite branch is `if version == 19:`",
-       re.search(r"if version == 19:", src) is not None)
-    ok("`_ensure_projects_schema` is called in run_migrations",
-       src.count("_ensure_projects_schema(db)") >= 2,
-       f"calls={src.count('_ensure_projects_schema(db)')}")
-    ok("upstream's user-role work survived the rebase",
-       "_ensure_user_role_schema" in src or "if version == 18:" in src)
+    print("4) version ceiling (read dynamically — never hard-coded)")
+    tuned = sorted(set(ceilings.values()) - {0})
+    ok(
+        "both dialects agree on the ceiling",
+        len(tuned) == 1,
+        f"sqlite={ceilings['sqlite']:03d} postgresql={ceilings['postgresql']:03d}",
+    )
+    ceiling = tuned[0] if len(tuned) == 1 else max(tuned, default=0)
+    print(f"     max version = {ceiling:03d} (read from {migrations})")
 
-    print("5) schema-version assertions were re-bumped to 19")
-    # Only ``tests/`` is scanned: the planning docs and this very script mention
-    # the old numbers on purpose (they describe the renumber), so a whole-repo
-    # grep reports them as false positives.
-    files = subprocess.run(
-        ["git", "grep", "-l", "-E", r"assert (v|version) == 18|schema_version\"\] == 18|runtime_schema_version\": 18", "--", "tests/"],
-        cwd=REPO, capture_output=True, text=True, encoding="utf-8",
-    ).stdout.split()
-    ok("no test still asserts 18", not files, str(files) if files else "")
-    hits = subprocess.run(
-        ["git", "grep", "-c", "-E", r"assert (v|version) == 19|schema_version\"\] == 19|runtime_schema_version\": 19", "--", "tests/"],
-        cwd=REPO, capture_output=True, text=True, encoding="utf-8",
-    ).stdout
-    print("     19-assertions per file:")
-    for line in hits.splitlines():
-        print(f"       {line}")
+    print("5) each migration's _schema_version watermark matches its own prefix")
+    bad_watermarks: list[str] = []
+    for version, per_dialect in sorted(table.items()):
+        for dialect, stems in sorted(per_dialect.items()):
+            for stem in stems:
+                name = file_name(version, dialect, stem)
+                text = (migrations / name).read_text(encoding="utf-8")
+                for value in re.findall(r"UPDATE _schema_version SET version = (\d+);", text):
+                    if int(value) != version:
+                        bad_watermarks.append(f"{name}: watermark {value} != prefix {version:03d}")
+    ok("watermarks match their filename prefix", not bad_watermarks, "; ".join(bad_watermarks))
+
+    print(f"6) {TEST_DB_POOL} asserts the current ceiling")
+    if not test_db_pool.is_file():
+        ok(f"{TEST_DB_POOL} exists", False)
+    else:
+        text = test_db_pool.read_text(encoding="utf-8")
+        hits = re.findall(r"assert (?:v|version) == (\d+)", text)
+        counts: dict[str, int] = {}
+        for value in hits:
+            counts[value] = counts.get(value, 0) + 1
+        ok(
+            f"schema-version assertions were bumped to {ceiling}",
+            str(ceiling) in counts,
+            f"asserted versions: {dict(sorted(counts.items(), key=lambda kv: int(kv[0])))}",
+        )
+        print(f"     {ceiling}-assertions in {test_db_pool.name}: {counts.get(str(ceiling), 0)}")
 
     print()
     if failures:
         print(f"{len(failures)} CHECK(S) FAILED:")
-        for f in failures:
-            print(f"  - {f}")
+        for failure in failures:
+            print(f"  - {failure}")
         return 1
     print("ALL PASSED")
     return 0
