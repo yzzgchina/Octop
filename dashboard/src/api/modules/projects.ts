@@ -123,6 +123,19 @@ export interface ProjectTask {
   status: ProjectTaskStatus;
   assignee_type: string | null;
   assignee_id: string | null;
+  /**
+   * 分配之「人」（PLAN §B2.1b）：元素 = `users.id`，逐字对照后端 `TaskOut.owners`。
+   * ★ **恒为数组、绝不返回 `null`**（PLAN §B2.5 (a)）⇒ 调用方**不需要** `?? []`；
+   * 空数组 = 未分配。权威载体是 `project_task_owners` 子表，`assignee_type` /
+   * `assignee_id` 只是由它派生的镜像列（后端 `TaskOut` 同款说明）。
+   */
+  owners: number[];
+  /**
+   * 智能体之「团队 / 专家」（PLAN §B2.1b）：元素形态 `"{type}:{id}"`，
+   * `type ∈ {agent, team}`（后端 `TaskOut.executors`；`user:…` 属「分配」侧，V2 拒绝）。
+   * ★ 恒为数组、绝不返回 `null`；空数组 = 未分配。
+   */
+  executors: string[];
   priority: number;
   deps: string[];
   thread_id: string | null;
@@ -231,6 +244,17 @@ export interface ProjectTaskCreateBody {
   parent_id?: string | null;
   assignee_type?: string | null;
   assignee_id?: string | null;
+  /**
+   * 分配之「人」（PLAN §B2.1b / §B2.5 (a)）：元素 = `users.id`（后端要求 `> 0`，
+   * 非法 ⇒ **422** V1）。可缺省、可 `null`（创建时无历史状态，`null` 与 `[]` 等价 = 不分配）。
+   * ★ 与 `assignee_type` / `assignee_id` **互斥** —— 同一次请求给两侧 ⇒ 后端 **422**（V3）。
+   */
+  owners?: number[] | null;
+  /**
+   * 智能体之「团队 / 专家」：元素形态 `"{type}:{id}"`，`type ∈ {agent, team}` ——
+   * `user:…` 与第三种前缀 ⇒ 后端 **422**（V2）。可缺省 / 可 `null`，与 `owners` 同款。
+   */
+  executors?: string[] | null;
   priority?: number;
   deps?: string[];
   due_at?: number | null;
@@ -255,6 +279,15 @@ export interface ProjectTaskUpdateBody {
   parent_id?: string | null;
   assignee_type?: string | null;
   assignee_id?: string | null;
+  /**
+   * 分配之「人」—— **三态**（PLAN §B2.5 (a)，逐字对照后端 `TaskPatch.owners`）：
+   * **缺字段 = 不改该侧** · `[]` = **清空**该侧 · 非空 = **整集替换**（不是追加）；
+   * 显式 `null` 后端按「不改」处理（冻结形状未把它定义为取值）。
+   * ★ 与 `assignee_type` / `assignee_id` **互斥** —— 同时给 ⇒ 后端 **422**（V3）。
+   */
+  owners?: number[] | null;
+  /** 智能体之「团队 / 专家」：三态与互斥同 `owners`；元素形态 `"{type}:{id}"`。 */
+  executors?: string[] | null;
   priority?: number;
   deps?: string[];
   due_at?: number | null;
