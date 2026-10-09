@@ -1213,13 +1213,17 @@ async def refresh_instance(
     server: Any = Depends(get_server),
     _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
-    """Refresh expiring OAuth tokens for a connector instance."""
+    """Refresh expiring OAuth tokens for a connector instance.
+
+    Ownership goes through :func:`_assert_can_manage_connector`, the same guard as the
+    other instance routes — so an admin may refresh **another user's** instance. This is a
+    deliberate, user-decided relaxation (P3-24), not an accident.
+    """
     repo = server.services.repos.connector_repo
     inst = repo.get(instance_id)
     if inst is None:
         raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
-    if inst.user_id != user.id:
-        raise OctopError(ErrorCode.FORBIDDEN, "not your connector instance")
+    _assert_can_manage_connector(inst, user)
     svc = _connector_service(server)
     creds = await svc.ensure_fresh_credentials(instance_id, inst.kind)
     return {"ok": True, "expires_at": creds.get("expires_at")}
