@@ -270,10 +270,37 @@ def test_validate_member_ids_is_the_membership_gate(roster_env: dict[str, object
     assert few.value.code is ErrorCode.TEAM_MEMBERS_TOO_FEW
 
 
+#: The 12 frozen role names (P3-41) — the external baseline the runtime vocabulary is
+#: reconciled against, exactly like ``_PROJECTS_KEYS_FLOOR`` (P3-40). The live set is
+#: read at run time and must contain every name below. Adding a role needs no edit here
+#: (the equality/parity assertion already fails on that, by name); dropping or
+#: *renaming* one — the failure the hand-written ``len(...) == 12`` could not see,
+#: because a rename keeps the length — is caught and the missing name is reported.
+#:
+#: Regenerate after a deliberate removal/rename:
+#:   uv run python -c "from octop.infra.agents.teams.pipeline import ROLES; print(' '.join(ROLES))"
+# fmt: off
+_TEAM_ROLES_FLOOR: frozenset[str] = frozenset(
+    """
+    pm architect researcher ui backend frontend
+    dba sec reviewer qa devops docs
+    """.split()  # noqa: SIM905 — a 12-element list literal would be 12 lines
+)
+# fmt: on
+
+
+def _assert_role_vocabulary_matches_floor(actual: frozenset[str]) -> None:
+    """The runtime role vocabulary must still carry every frozen role name."""
+    lost = sorted(_TEAM_ROLES_FLOOR - set(actual))
+    assert not lost, f"team role vocabulary lost role(s) — {lost}"
+
+
 def test_role_table_is_the_single_twelve_role_vocabulary() -> None:
     """角色闭集 = pipeline.ROLES 的转发（12 个），不在 service 里另抄一份。"""
     assert frozenset(ROLES) == TEAM_ROLES
-    assert len(TEAM_ROLES) == 12
+    # P3-41：旧断言 `len(TEAM_ROLES) == 12` 换成「现读 + 12 键冻结清单」——增角色由上面的
+    # frozenset 比较按名报出，删/改名由冻结清单按名报出，条数不再写死。
+    _assert_role_vocabulary_matches_floor(TEAM_ROLES)
 
 
 # ── A4 / A5（roster-guard 批次）：档位裁剪的安全性 ─────────────────────────────

@@ -10,7 +10,10 @@
   height: 100%;
   align-self: stretch;
   position: relative;
-  background: var(--fn-bg-sidebar, var(--fn-bg-elevated, #fff));
+  /* D11 layer 2 (UI.md 2.7). This rule wins over chatSidebar.partial.less
+     `.sidebarWrapper` (two classes > one), so it must carry the layer-2 value
+     itself — changing only the partial leaves the sidebar white. */
+  background: var(--fn-bg-group);
 
   &.sidebarWrapperCollapsed {
     /* No reserved strip — share the nav rail divider (avoids a double-line gap). */
@@ -42,7 +45,9 @@
   z-index: 2;
   padding: 0 16px;
   height: 100%;
-  background: var(--fn-bg-elevated, #fff);
+  /* D11 layer 2 (UI.md 2.7). Same selector as chatSidebar.partial.less but
+     later in the bundle, so this declaration is the one that paints. */
+  background: var(--fn-bg-group);
 
   @media (max-width: 767px) {
     padding: 0;
@@ -62,7 +67,9 @@
   min-width: 248px;
   height: 100%;
   border-radius: 0;
-  background: var(--fn-bg-elevated, #fff);
+  /* D11 layer 2 (UI.md 2.7). Later duplicate of chatSidebar.partial.less
+     `.sidebar`; this one wins on source order. */
+  background: var(--fn-bg-group);
   box-shadow: none;
   border: none;
   border-right: none;
@@ -677,15 +684,14 @@
   margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
-  border-radius: 24px;
-  padding: 10px 12px 10px 16px;
-  background: var(--fn-bg-primary);
-  border: 1px solid var(--fn-assistant-bubble-border);
-  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.05);
+  border-radius: 14px;
+  padding: 10px 12px 8px;
+  background: var(--fn-bg-card);
+  border: 1px solid var(--fn-border-input);
+  box-shadow: var(--fn-shadow-sm);
 
   @media (max-width: 767px) {
     padding: 6px 10px 6px 14px;
-    border-radius: 20px;
   }
 }
 
@@ -733,8 +739,12 @@
 .sendBtn {
   width: 38px;
   height: 38px;
-  border-radius: 12px;
+  border-radius: var(--fn-radius-full);
   box-shadow: var(--fn-shadow-brand);
+}
+
+.sendBtn:hover:not(:disabled) {
+  background: var(--fn-btn-dark-bg-hover);
 }
 
 .shortcutPopover {

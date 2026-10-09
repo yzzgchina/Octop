@@ -39,6 +39,25 @@ html[data-theme="light"] {
   --fn-fill-hover: rgba(0, 0, 0, 0.04);
   --fn-fill-tertiary: #f2f3f5;
 
+  /* ---- Background layering (D11 three layers, UI.md 2.7) ----
+     layer 1 page  = --fn-bg-layout   (lightest grey)
+     layer 2 group = --fn-bg-group    kanban columns / groups / docks
+     layer 3 card  = --fn-bg-card     task & message cards (whitest)
+     Light reads "whiter towards the user". The dark block below reads
+     "brighter towards the user" instead - the two directions are opposite on
+     purpose; never copy one block's mapping into the other. */
+  --fn-bg-group: #e8eaef;
+  --fn-bg-card: var(--fn-bg-primary);
+  /* Card / inner-panel surface alias; must stay equal to --fn-bg-card. */
+  --fn-card-surface: var(--fn-bg-card);
+
+  /* ---- Buttons & key chips (UI.md 2.1; values from prototype proto.css @337-341) ---- */
+  --fn-btn-dark-bg: var(--fn-text-primary); /* #111827 */
+  --fn-btn-dark-bg-hover: #1f2937;
+  --fn-btn-dark-fg: var(--fn-text-inverse); /* #ffffff */
+  --fn-chip-key-bg: var(--fn-color-info); /* #3b82f6 */
+  --fn-chip-key-fg: var(--fn-text-inverse); /* #ffffff */
+
   /* ---- Text ---- */
   --fn-text-primary: #111827;
   --fn-text-secondary: #4b5563;
@@ -222,6 +241,23 @@ html[data-theme="dark"] {
   --fn-surface-sunken: #1a1a1a;
   --fn-fill-hover: rgba(255, 255, 255, 0.08);
   --fn-fill-tertiary: rgba(255, 255, 255, 0.06);
+
+  /* ---- Background layering (D11 three layers, UI.md 2.7) ----
+     Same three layers as the light block, but the direction is inverted: dark
+     reads "brighter towards the user" (page -> group -> card). The card surface
+     must NOT be --fn-bg-primary here: that is darker than the group layer and
+     would invert the stack (UI.md 2.1 / AC-28). */
+  --fn-bg-group: var(--fn-bg-secondary);
+  --fn-bg-card: var(--fn-bg-tertiary);
+  /* Card / inner-panel surface alias; must stay equal to --fn-bg-card. */
+  --fn-card-surface: var(--fn-bg-card);
+
+  /* ---- Buttons & key chips (UI.md 2.1; values from prototype proto.css @353-357) ---- */
+  --fn-btn-dark-bg: rgba(255, 255, 255, 0.14);
+  --fn-btn-dark-bg-hover: rgba(255, 255, 255, 0.2);
+  --fn-btn-dark-fg: rgba(255, 255, 255, 0.92);
+  --fn-chip-key-bg: rgba(59, 130, 246, 0.18);
+  --fn-chip-key-fg: var(--fn-color-info); /* #60a5fa */
 
   /* ---- Text ---- */
   --fn-text-primary: rgba(255, 255, 255, 0.9);

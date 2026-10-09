@@ -65,13 +65,13 @@
 }
 
 .sectionCount {
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   font-size: 12px;
 }
 
 /* 空区：仍占一行，不隐藏该区块。 */
 .sectionEmpty {
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   font-size: 12px;
 }
 
@@ -126,7 +126,7 @@
   /* 卡片自带边框 → 去掉 antd 的行分隔线与 hover 底色，避免双重线。 */
   tr > td {
     border-bottom: none;
-    background: var(--fn-bg-primary);
+    background: var(--fn-bg-card);
   }
 
   /* 卡片头（区块标题 + 计数）：上、左、右三边 + 上圆角。 */
@@ -172,6 +172,137 @@
   tr.zoneHeader:not(:first-child) > td {
     padding-top: 20px !important;
   }
+}
+
+/* ---------- 卡片元素同源样式（PLAN §2.3 / §4.4 · 值逐字对照 Board.module.less） ----------
+   列表是 antd `Table`，DOM **不要求**与看板同构（SPEC §5 技术栈边界），但版式取值
+   必须同源：本地变量按 PLAN §4.4 的对照表逐字重复声明（值不得与看板不同），
+   颜色一律走 var(--fn-*)；不新增任何手写 z-index（菜单/浮层走 antd Portal）。 */
+
+.cardChips,
+.assigneeSlot {
+  --card-fs-chip: 11px;
+  --card-fs-meta: 12px;
+  --card-chip-radius: 8px;
+  --card-chip-pad: 1px 6px;
+  --card-chip-dot: 6px;
+  --card-bar-w: 3px;
+  --card-bar-gap: 2px;
+  --card-bar-h: 12px;
+  --card-bar-radius: 1px;
+  --card-avatar: 28px;
+  --card-badge: 24px;
+}
+
+/* 标签 chip 行（≤3 + 「+N」，R-04）：与看板 `.cardChips` 同一版式，去掉了
+   看板的行距（单元格自带 padding）。 */
+.cardChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cardChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: var(--card-chip-pad);
+  border-radius: var(--card-chip-radius);
+  background: var(--fn-bg-tertiary);
+  font-size: var(--card-fs-chip);
+  color: var(--fn-text-secondary);
+}
+
+.cardChipDot {
+  flex: none;
+  width: var(--card-chip-dot);
+  height: var(--card-chip-dot);
+  border-radius: var(--fn-radius-full);
+  background: var(--fn-text-secondary);
+}
+
+.cardChipMore {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--card-chip-pad);
+  border-radius: var(--card-chip-radius);
+  background: var(--fn-bg-tertiary);
+  font-size: var(--card-fs-chip);
+  color: var(--fn-text-secondary);
+  cursor: default;
+}
+
+/* 优先级列：3 根柱 + 档位文案（R-02）。 */
+.cardPriority {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--card-fs-meta);
+  color: var(--fn-text-secondary);
+}
+
+.cardPriorityBars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: var(--card-bar-gap);
+  height: var(--card-bar-h);
+}
+
+.cardPriorityBar {
+  width: var(--card-bar-w);
+  border-radius: var(--card-bar-radius);
+  background: var(--fn-border-input);
+
+  &:nth-child(1) {
+    height: 5px;
+  }
+
+  &:nth-child(2) {
+    height: 8px;
+  }
+
+  &:nth-child(3) {
+    height: 12px;
+  }
+}
+
+.isOn {
+  background: var(--fn-color-warning);
+}
+
+/* 负责人列：头像 +（agent/team 时）徽标 + 名称，单行不换行。 */
+.assigneeSlot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.cardAvatar {
+  flex-shrink: 0;
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+}
+
+.cardAgentBadge {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: var(--card-badge);
+  height: var(--card-badge);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-full);
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+}
+
+.assigneeName {
+  min-width: 0;
+  font-size: var(--card-fs-meta);
+  color: var(--fn-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* G4（PLAN §4.1）：标题 = 导航入口，样式像链接但语义是 button（可键盘聚焦）。 */

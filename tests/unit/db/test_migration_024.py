@@ -7,6 +7,7 @@ file keeps meaning "not attached to a comment". Additive DDL only — no rebuild
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from octop.infra.db.migrate import run_migrations
@@ -27,7 +28,7 @@ def _columns(pool: SqlitePool, table: str) -> set[str]:
 def test_head_is_24(tmp_path: Path) -> None:
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
-    assert _version(pool) == 26
+    assert _version(pool) == 27
 
 
 def test_comment_id_exists_and_is_nullable(tmp_path: Path) -> None:
@@ -45,7 +46,7 @@ def test_rerunning_migrations_is_idempotent(tmp_path: Path) -> None:
     run_migrations(pool)
     before = _columns(pool, "project_artifacts")
     run_migrations(pool)
-    assert _version(pool) == 26
+    assert _version(pool) == 27
     assert _columns(pool, "project_artifacts") == before
 
 
@@ -72,4 +73,6 @@ def test_the_pair_is_self_contained_on_both_dialects() -> None:
 
 def test_no_migrate_helper_was_added() -> None:
     migrate = Path("src/octop/infra/db/migrate.py").read_text(encoding="utf-8")
-    assert "comment_id" not in migrate, "024 must slot into the generic SQL path"
+    # A bare identifier: 027's ``parent_comment_id`` is a different column and
+    # must not read as a 024 helper.
+    assert re.search(r"\bcomment_id\b", migrate) is None, "024 must slot into the generic SQL path"

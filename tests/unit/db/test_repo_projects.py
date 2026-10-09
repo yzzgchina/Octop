@@ -7,14 +7,26 @@ alone, explicit ``None`` = clear), and the resource-table convention
 
 from __future__ import annotations
 
+import os
+import re
+import sqlite3
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from tests.support.postgresql import requires_postgresql
 
 from octop.infra.db.migrate import run_migrations
-from octop.infra.db.pool import SqlitePool
+from octop.infra.db.pool import PostgresPool, SqlitePool
 from octop.infra.db.repos.agents import AgentRepo
-from octop.infra.db.repos.project_tasks import TASK_STATUSES, ProjectTaskRepo
+from octop.infra.db.repos.project_content import ProjectCommentRepo
+from octop.infra.db.repos.project_tasks import (
+    ALLOCATE_TASK_SEQ_SQL,
+    TASK_STATUSES,
+    ProjectTaskRepo,
+    task_number_text,
+)
 from octop.infra.db.repos.projects import (
     MEMBER_SUBJECT_AGENT,
     MEMBER_SUBJECT_USER,
@@ -559,3 +571,315 @@ def test_report_refuses_a_stale_attempt_and_leaves_the_row_alone(db: SqlitePool,
     assert kept is not None and kept.verdict == "needs_revision"
 
     assert tasks.report("nope", attempt_id=token) is None
+
+
+# ── task numbering (PLAN §B1.2 / AC-16) ──────────────────────────────────────
+
+TASK_NUMBER_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,7}-\d{3,4}$")
+
+PREFIX_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{1,7}$")
+
+
+def _child_row_counts(db: SqlitePool, task_id: str) -> tuple[int, int]:
+    with db.connect() as conn:
+        owners = conn.execute(
+            "SELECT COUNT(*) AS c FROM project_task_owners WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        executors = conn.execute(
+            "SELECT COUNT(*) AS c FROM project_task_executors WHERE task_id = ?", (task_id,)
+        ).fetchone()
+    return int(owners["c"]), int(executors["c"])
+
+
+def _child_row_ids(db: SqlitePool, table: str, task_id: str) -> list[int]:
+    with db.connect() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM {table} WHERE task_id = ? ORDER BY id", (task_id,)
+        ).fetchall()
+    return [int(r["id"]) for r in rows]
+
+
+def test_project_create_derives_the_task_prefix(db: SqlitePool, owner: int):
+    projects = ProjectRepo(db)
+    assert projects.create(owner_user_id=owner, name="Alpha").task_prefix == "ALPHA"
+    # A pure-CJK name has no ASCII core to keep, so the id carries the prefix.
+    cjk = projects.create(owner_user_id=owner, name="项目甲")
+    assert PREFIX_PATTERN.match(cjk.task_prefix)
+
+
+def test_task_prefix_is_patchable_and_never_renumbers(db: SqlitePool, owner: int):
+    """PLAN §B1.3: a prefix change only affects numbers allocated afterwards."""
+    projects = ProjectRepo(db)
+    tasks = ProjectTaskRepo(db)
+    project = projects.create(owner_user_id=owner, name="Alpha")
+
+    first = tasks.create(project_id=project.id, title="1", created_by=owner)
+    assert first.task_number == "ALPHA-001"
+    renamed = projects.update(project.id, task_prefix="BETA")
+    assert renamed is not None and renamed.task_prefix == "BETA"
+    second = tasks.create(project_id=project.id, title="2", created_by=owner)
+    assert second.task_number == "BETA-002"
+
+    refetched = tasks.get(first.id)
+    assert refetched is not None and refetched.task_number == "ALPHA-001"
+
+
+def test_numbering_is_per_project(db: SqlitePool, owner: int):
+    projects = ProjectRepo(db)
+    tasks = ProjectTaskRepo(db)
+    a = projects.create(owner_user_id=owner, name="Alpha")
+    b = projects.create(owner_user_id=owner, name="Bee")
+    assert tasks.create(project_id=a.id, title="1", created_by=owner).task_number == "ALPHA-001"
+    assert tasks.create(project_id=b.id, title="1", created_by=owner).task_number == "BEE-001"
+    assert tasks.create(project_id=a.id, title="2", created_by=owner).task_number == "ALPHA-002"
+
+
+def test_single_character_name_falls_back_to_the_project_id(db: SqlitePool, owner: int):
+    """PLAN §B1.1 step 4: ``len(core) < 2`` ⇒ the id carries the prefix."""
+    project = ProjectRepo(db).create(owner_user_id=owner, name="A")
+    assert PREFIX_PATTERN.match(project.task_prefix)
+    assert project.task_prefix != "A"
+
+
+def test_task_number_widens_to_four_digits_from_1000():
+    assert task_number_text("ALPHA", 1) == "ALPHA-001"
+    assert task_number_text("ALPHA", 999) == "ALPHA-999"
+    assert task_number_text("ALPHA", 1000) == "ALPHA-1000"
+    assert TASK_NUMBER_PATTERN.match(task_number_text("ALPHA", 1000))
+
+
+def test_allocation_is_one_upsert_statement():
+    """AC-2: the statement *is* the allocator — no read-modify-write, no lock."""
+    sql = ALLOCATE_TASK_SEQ_SQL
+    assert sql.startswith("INSERT INTO project_task_counters(project_id, last_seq) VALUES (?, 1)")
+    assert (
+        "ON CONFLICT(project_id) DO UPDATE SET last_seq = project_task_counters.last_seq + 1" in sql
+    )
+    assert sql.endswith("RETURNING last_seq")
+    upper = sql.upper()
+    assert "SELECT" not in upper, "MAX(...)+1 style read-modify-write is forbidden"
+    assert "FOR UPDATE" not in upper
+
+
+def test_the_counter_row_is_the_sequence_source(db: SqlitePool, owner: int):
+    """AC-2 at the database level: the sequence comes from the counter row.
+
+    A ``SELECT MAX(...) + 1`` implementation never writes
+    ``project_task_counters``, so this assertion is what turns red when the
+    forbidden shape is reintroduced (it cannot be caught by a concurrency case on
+    SQLite, whose single shared connection serializes the writers anyway).
+    """
+    project = ProjectRepo(db).create(owner_user_id=owner, name="Alpha")
+    tasks = ProjectTaskRepo(db)
+    for i in range(3):
+        tasks.create(project_id=project.id, title=f"T{i}", created_by=owner)
+
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT last_seq FROM project_task_counters WHERE project_id = ?", (project.id,)
+        ).fetchone()
+    assert row is not None, "allocation must seed the counter row"
+    assert int(row["last_seq"]) == 3
+
+
+def test_concurrent_allocation_is_unique_and_contiguous(db: SqlitePool, owner: int):
+    """AC-3: N parallel creators ⇒ no duplicate, and the run is 1..N."""
+    project = ProjectRepo(db).create(owner_user_id=owner, name="Alpha")
+    tasks = ProjectTaskRepo(db)
+    count = 12
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(tasks.create, project_id=project.id, title=f"T{i}", created_by=owner)
+            for i in range(count)
+        ]
+        created = [f.result() for f in futures]
+
+    numbers = [t.task_number for t in created]
+    assert all(n is not None and TASK_NUMBER_PATTERN.match(n) for n in numbers), numbers
+    assert len(set(numbers)) == count
+    sequences = sorted(int(str(n).rsplit("-", 1)[1]) for n in numbers)
+    assert sequences == list(range(1, count + 1))
+
+
+def test_owners_and_executors_keep_array_order_and_replace_whole(
+    db: SqlitePool, owner: int, other: int
+):
+    project = ProjectRepo(db).create(owner_user_id=owner, name="Alpha")
+    tasks = ProjectTaskRepo(db)
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner,
+        owners=[other, owner],
+        executors=["team:t1", "agent:a1"],
+    )
+    assert task.owners == (other, owner)
+    assert task.executors == ("team:t1", "agent:a1")
+    # The mirror is derived with executors[0] first, never with the owner.
+    assert (task.assignee_type, task.assignee_id) == ("team", "t1")
+
+    updated = tasks.update(task.id, owners=[owner], executors=["agent:a9"])
+    assert updated is not None
+    assert updated.owners == (owner,)
+    assert updated.executors == ("agent:a9",)
+    assert (updated.assignee_type, updated.assignee_id) == ("agent", "a9")
+    assert len(_child_row_ids(db, "project_task_owners", task.id)) == 1
+    assert len(_child_row_ids(db, "project_task_executors", task.id)) == 1
+
+    # Re-sending the same arrays reproduces the same rows (idempotent), and the
+    # replacement keeps the client order rather than appending.
+    again = tasks.update(task.id, owners=[other, owner], executors=["team:t1", "agent:a1"])
+    assert again is not None
+    assert (again.owners, again.executors) == ((other, owner), ("team:t1", "agent:a1"))
+    with db.connect() as conn:
+        stored = [
+            int(r["user_id"])
+            for r in conn.execute(
+                "SELECT user_id FROM project_task_owners WHERE task_id = ? ORDER BY id",
+                (task.id,),
+            ).fetchall()
+        ]
+    assert stored == [other, owner]
+
+
+def test_duplicate_elements_are_deduped_with_unique_as_the_db_backstop(db: SqlitePool, owner: int):
+    project = ProjectRepo(db).create(owner_user_id=owner, name="Alpha")
+    tasks = ProjectTaskRepo(db)
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner,
+        owners=[owner, owner],
+        executors=["agent:a1", "agent:a1"],
+    )
+    assert task.owners == (owner,)
+    assert task.executors == ("agent:a1",)
+
+    # Even if the application layer were bypassed, the database refuses a
+    # duplicate row (PLAN §B2.3 ②: the UNIQUE constraints are the backstop).
+    with pytest.raises(sqlite3.IntegrityError), db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO project_task_owners(task_id, user_id) VALUES (?, ?)",
+            (task.id, owner),
+        )
+    with pytest.raises(sqlite3.IntegrityError), db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO project_task_executors(task_id, subject_type, subject_id)"
+            " VALUES (?, ?, ?)",
+            (task.id, "agent", "a1"),
+        )
+
+
+def test_task_list_reads_the_child_tables_once_each(db: SqlitePool, owner: int):
+    """No N+1: one query per child table for the whole page, not one per task."""
+    project = ProjectRepo(db).create(owner_user_id=owner, name="Alpha")
+    tasks = ProjectTaskRepo(db)
+    for i in range(5):
+        tasks.create(
+            project_id=project.id,
+            title=f"T{i}",
+            created_by=owner,
+            owners=[owner],
+            executors=["agent:a1"],
+        )
+
+    statements: list[str] = []
+    db._conn.set_trace_callback(statements.append)  # type: ignore[attr-defined]
+    try:
+        rows = tasks.list_by_project(project.id)
+    finally:
+        db._conn.set_trace_callback(None)  # type: ignore[attr-defined]
+
+    assert [r.owners for r in rows] == [(owner,)] * 5
+    assert [r.executors for r in rows] == [("agent:a1",)] * 5
+    child_queries = [
+        s for s in statements if "project_task_owners" in s or "project_task_executors" in s
+    ]
+    assert len(child_queries) == 2, child_queries
+
+
+# ── cascade delete of the two child tables (PLAN §B2.3 ③) ────────────────────
+
+
+def test_delete_task_cascades_to_both_child_tables(db: SqlitePool, owner: int):
+    project = ProjectRepo(db).create(owner_user_id=owner, name="Alpha")
+    tasks = ProjectTaskRepo(db)
+    task = tasks.create(
+        project_id=project.id,
+        title="T",
+        created_by=owner,
+        owners=[owner],
+        executors=["team:t1"],
+    )
+    assert _child_row_counts(db, task.id) == (1, 1)
+
+    assert tasks.delete(task.id) is True
+    assert _child_row_counts(db, task.id) == (0, 0)
+
+
+def _pg_conninfo() -> str:
+    return os.environ["OCTOP_TEST_DATABASE_URL"]
+
+
+def _reset_public_schema(pool: PostgresPool) -> None:
+    with pool.connect() as conn:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO CURRENT_USER")
+        conn.execute("COMMIT")
+
+
+@requires_postgresql
+@pytest.mark.postgresql
+def test_delete_task_cascades_to_both_child_tables_postgresql():
+    """The same cascade on PostgreSQL (gated: needs ``OCTOP_TEST_DATABASE_URL``)."""
+    pool = PostgresPool(_pg_conninfo())
+    try:
+        _reset_public_schema(pool)
+        run_migrations(pool)
+        owner = UserRepo(pool).create(
+            username=f"pg_owner_{uuid.uuid4().hex[:8]}", password_hash="h", role="user"
+        )
+        project = ProjectRepo(pool).create(owner_user_id=owner, name="Alpha")
+        tasks = ProjectTaskRepo(pool)
+        task = tasks.create(
+            project_id=project.id,
+            title="T",
+            created_by=owner,
+            owners=[owner],
+            executors=["team:t1"],
+        )
+        assert task.task_number is not None and TASK_NUMBER_PATTERN.match(task.task_number)
+        assert _child_row_counts(pool, task.id) == (1, 1)  # type: ignore[arg-type]
+
+        assert tasks.delete(task.id) is True
+        assert _child_row_counts(pool, task.id) == (0, 0)  # type: ignore[arg-type]
+    finally:
+        pool.close()
+
+
+# ── comment quotes (PLAN §B3.1) ──────────────────────────────────────────────
+
+
+def test_comment_quote_columns_round_trip(db: SqlitePool, owner: int):
+    project = ProjectRepo(db).create(owner_user_id=owner, name="Alpha")
+    comments = ProjectCommentRepo(db)
+    root = comments.create(
+        project_id=project.id, author_type="user", author_id=str(owner), body="first"
+    )
+    assert (root.parent_comment_id, root.quote_excerpt) == (None, None)
+
+    reply = comments.create(
+        project_id=project.id,
+        author_type="user",
+        author_id=str(owner),
+        body="second",
+        parent_comment_id=root.id,
+        quote_excerpt="first",
+    )
+    fetched = comments.get(reply.id)
+    assert fetched is not None
+    assert (fetched.parent_comment_id, fetched.quote_excerpt) == (root.id, "first")
+    assert [
+        (c.parent_comment_id, c.quote_excerpt) for c in comments.list_by_project(project.id)
+    ] == [(None, None), (root.id, "first")]

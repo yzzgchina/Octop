@@ -88,9 +88,36 @@ EXPECTED_ROLES: frozenset[str] = frozenset(
 )
 
 
+#: The 12 frozen role names (P3-41) — the external baseline the runtime vocabulary is
+#: reconciled against, exactly like ``_PROJECTS_KEYS_FLOOR`` (P3-40). The live set is
+#: read at run time and must contain every name below. Adding a role needs no edit here
+#: (the equality/parity assertion already fails on that, by name); dropping or
+#: *renaming* one — the failure the hand-written ``len(...) == 12`` could not see,
+#: because a rename keeps the length — is caught and the missing name is reported.
+#:
+#: Regenerate after a deliberate removal/rename:
+#:   uv run python -c "from octop.infra.agents.teams.pipeline import ROLES; print(' '.join(ROLES))"
+# fmt: off
+_TEAM_ROLES_FLOOR: frozenset[str] = frozenset(
+    """
+    pm architect researcher ui backend frontend
+    dba sec reviewer qa devops docs
+    """.split()  # noqa: SIM905 — a 12-element list literal would be 12 lines
+)
+# fmt: on
+
+
+def _assert_role_vocabulary_matches_floor(actual: frozenset[str]) -> None:
+    """The runtime role vocabulary must still carry every frozen role name."""
+    lost = sorted(_TEAM_ROLES_FLOOR - set(actual))
+    assert not lost, f"team role vocabulary lost role(s) — {lost}"
+
+
 def test_team_roles_is_exactly_the_twelve_fixed_roles() -> None:
-    assert len(art.TEAM_ROLES) == 12
+    # P3-41：`len(art.TEAM_ROLES) == 12` 与下一行同值却又独立写死；改为「现读 + 冻结清单」
+    # 按名对账 —— EXPECTED_ROLES 是**增角色**时的独立真值，冻结清单是**删/改名**时的独立真值。
     assert art.TEAM_ROLES == EXPECTED_ROLES
+    _assert_role_vocabulary_matches_floor(art.TEAM_ROLES)
 
 
 def _assert_role_vocabulary_has_one_authority() -> None:

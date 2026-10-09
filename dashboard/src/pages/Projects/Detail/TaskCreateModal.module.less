@@ -91,6 +91,33 @@
   color: var(--fn-color-brand);
 }
 
+/* `P2-6`: the row's leading icon + visible name. The machine key (`type:id`) lives
+   in `aria-label` only, so the copy stays human (UIS-P-05). */
+.optionName {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.optionLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `P2-6` 智能体 picker 的分组标题（团队 / 专家）。空组不渲染，故不留空壳。 */
+.optionGroup {
+  display: flex;
+  flex-direction: column;
+}
+
+.optionGroupTitle {
+  padding: 6px 8px 2px;
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+}
+
 /* PLAN S4: an illegal status target in edit mode — visible but not pickable. */
 .optionDisabled {
   opacity: 0.45;
@@ -214,10 +241,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.footerButton {
-  display: inline-flex;
 }
 
 /* The trigger is a chip; keep the native input out of the layout. */

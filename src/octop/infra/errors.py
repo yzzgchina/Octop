@@ -191,6 +191,11 @@ class ErrorCode(StrEnum):
     PROJECT_TASK_TAG_INVALID = "PROJECT_TASK_TAG_INVALID"
     PROJECT_TASK_DATE_INVALID = "PROJECT_TASK_DATE_INVALID"
     PROJECT_TASK_DISPATCH_INVALID = "PROJECT_TASK_DISPATCH_INVALID"
+    # F2 (lead ruling ``f2-repo-octoperror``, 2026-10-08): an assignee user id that is
+    # not a number, or that names no ``users`` row, is a caller error. The repo layer
+    # converts both to this code instead of letting ``ValueError`` / ``IntegrityError``
+    # reach the catch-all handler as a 500.
+    PROJECT_TASK_ASSIGNEE_INVALID = "PROJECT_TASK_ASSIGNEE_INVALID"
     PROJECT_CUSTOM_FIELD_NOT_FOUND = "PROJECT_CUSTOM_FIELD_NOT_FOUND"
     PROJECT_CUSTOM_FIELD_INVALID = "PROJECT_CUSTOM_FIELD_INVALID"
     PROJECT_CUSTOM_FIELD_VALUE_INVALID = "PROJECT_CUSTOM_FIELD_VALUE_INVALID"
@@ -379,6 +384,11 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.PROJECT_TASK_TAG_INVALID: 409,
     ErrorCode.PROJECT_TASK_DATE_INVALID: 400,
     ErrorCode.PROJECT_TASK_DISPATCH_INVALID: 409,
+    # F2: the request is well-formed JSON but names an unusable assignee — 422
+    # (unprocessable entity), never a 5xx. The card freezes 422 for the non-numeric
+    # case and 422/400 for the missing-user case; one code, one status, so both are
+    # 422 (a 400 would have to be passed explicitly and would split the refusal).
+    ErrorCode.PROJECT_TASK_ASSIGNEE_INVALID: 422,
     ErrorCode.PROJECT_CUSTOM_FIELD_NOT_FOUND: 404,
     ErrorCode.PROJECT_CUSTOM_FIELD_INVALID: 409,
     ErrorCode.PROJECT_CUSTOM_FIELD_VALUE_INVALID: 400,

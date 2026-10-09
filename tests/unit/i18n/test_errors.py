@@ -155,10 +155,10 @@ def test_dashboard_chat_labels_are_paired_and_localized():
     repo = Path(__file__).resolve().parents[3]
     en = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
     zh = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
-    assert set(en["chat"]) == set(zh["chat"])
-    # 213 = 211 + the two chat keys upstream v1.0.2b5 added (`remoteExpert`,
-    # `expertRemoteBadge`); en and zh both moved, so parity still holds.
-    assert len(zh["chat"]) == 213
+    # Namespace history (the old hand-maintained watermark): 213 = 211 + the two chat keys
+    # upstream v1.0.2b5 added (`remoteExpert`, `expertRemoteBadge`). P3-41 drops the literal:
+    # the bundle is read now, the floor only says which keys may never disappear.
+    _assert_chat_watermark(en, zh)
     assert zh["chat"]["sectionPinned"] == "置顶"
     assert zh["chat"]["sectionActive"] == "会话"
     assert zh["chat"]["sectionUnused"] == "未使用"
@@ -231,6 +231,222 @@ def test_dashboard_api_errors_carry_the_new_zh_text():
         assert dash_zh["apiErrors"][code] == expected, code
 
 
+# ── dashboard locale floors (P3-41) ──────────────────────────────────────────
+#
+# These guards used to pin sizes as literals (``len(zh["chat"]) == 213`` and
+# ``len(data) == 82``). Both self-declared that they drift: the ``chat`` count
+# carried a hand-written "211 -> 213, upstream added two keys" note, and the
+# top-level count said "whoever adds the next namespace bumps it again".
+#
+# P3-41 reads the real bundles at run time and keeps a frozen inventory as the
+# external baseline — the same shape as ``_PROJECTS_KEYS_FLOOR`` (P3-40):
+#
+# * ``_CHAT_KEYS_FLOOR`` is a **monotonic lower bound** (``floor <= bundle``):
+#   adding a chat key needs no edit here; dropping or renaming one — from either
+#   locale, or from both at once, which ``set(en) == set(zh)`` alone cannot see —
+#   fails and *names the key*. ``len(zh["chat"]) == 213`` only fired once a count
+#   moved, and could not say which key went missing.
+# * ``_TOP_LEVEL_FLOOR`` is the exact namespace inventory (``set(data) ==
+#   frozenset``): that guard exists to catch a duplicated top-level block from
+#   concurrent writers, so membership must be exact. It still names the offending
+#   namespace instead of reporting two numbers.
+#
+# Neither is a second watermark: no count is compared against the bundle, and
+# every failure message carries namespace/key names.
+#
+# Regenerate after a deliberate removal/rename:
+#   python -c "import json;print(' '.join(sorted(json.load(open('dashboard/src/locales/zh.json'))['chat'])))"
+#   python -c "import json;print(' '.join(sorted(json.load(open('dashboard/src/locales/zh.json')))))"
+#
+# fmt: off
+_CHAT_KEYS_FLOOR: frozenset[str] = frozenset(
+    """
+    agentFailed agentFailedHint agentNoDescription agentNotRunning agentNotRunningHint
+    agentProfile agentStarting agentStartingHint ask bootstrapKickoff citationDeepLinkFailed
+    citationPreview citationPreviewFailed citationScrollTop citationViewInKnowledgeBase
+    citations collapseHistorySidebar collapseThinking collapseThinkingHint composerContextLabel
+    composerMore contextWindow continuing conversationMode createExpert createSessionFailed
+    deleteSessionConfirm dislike dockAddTab dockFileList dockFileListCount dockFileListEmpty
+    dockFileListHint dockFileMaybeDeleted dockPhoneTitle dockTerminalTitle dockToolUiMissing
+    dockToolUiTitle downloadFailed editFileCard errorOccurred expandHistorySidebar expandMore
+    expertHide expertListHidden expertListHiddenEmpty expertListShowVisible expertPicker
+    expertPickerEmpty expertPickerHidden expertPickerHiddenEmpty expertPickerHiddenSearch
+    expertPickerManage expertPickerSearch expertPickerShowVisible expertRemoteBadge
+    expertSharedBadge expertUnhide fileSwitch fileWorkspace fileWorkspaceHint fork
+    forkDisabledWhileBusy forkFailed forkFromHere forkNoAssistant forkSuccess forkSuccessEmpty
+    generating generatingWithElapsed goToAgentConfig goToExperts hideThinking historyLoadFailed
+    historyMigration historyRetry hitl imageLoadFailed knowledgePicker knowledgePickerEmpty
+    knowledgePickerSearch like loadEarlierMessages loadingEarlierMessages manageKnowledgeBases
+    mediaLoadFailed memberResponding membersResponding membersRespondingNamed memoryMaintenance
+    modelAuto modelAutoHint modelPickerManage modifiedFiles nameJoin newRepliesBelow
+    noAgentsHint noAgentsTitle noSearchResults noSessionsYet openBrowser openBrowserHint
+    openPhone openTerminal openToolUiInDock openTrajectory openWorkspace pickAgent pin polish
+    processOrganizing processRunningTool processRunningTools processSummary
+    processSummaryThinkingOnly processSummaryToolsOnly processThinkingLive projectSessionBadge
+    pushToast queue reasoningAlways reasoningAuto reasoningDisabled reasoningEffort
+    reasoningEnabled reasoningMode refreshingMessages regenerate remoteBrowserTitle remoteExpert
+    resizeSidebar retry scrollForEarlierMessages scrollToBottom searchSessions sectionActive
+    sectionPinned sectionUnused selectModel send sessionWorking sharedExpert showThinking
+    skillPicker skillPickerEmpty skillPickerSearch stop stopTeamHint streamResumed
+    subagentPicker subagentPickerEmpty subagentPickerManage subagentPickerSearch teamBadge
+    teamHostHover teamProfile teamWrapupBadge thinking toolUiDockedHint toolUiDockedOpen
+    trajectoryCollapsedToolCallMany trajectoryCollapsedToolCallOne trajectoryCollapsedTurn
+    trajectoryDetailError trajectoryDetailLoading trajectoryEmpty trajectoryExport
+    trajectoryExportFailed trajectoryInspectorCompleted trajectoryInspectorEmptyPayload
+    trajectoryInspectorError trajectoryInspectorGeneration trajectoryInspectorKind
+    trajectoryInspectorPayload trajectoryInspectorPlaceholder trajectoryInspectorPreview
+    trajectoryInspectorRaw trajectoryInspectorResult trajectoryInspectorSource
+    trajectoryInspectorStarted trajectoryInspectorStatus trajectoryInspectorSummary
+    trajectoryInspectorThroughput trajectoryInspectorTiming trajectoryInspectorTokens
+    trajectoryInspectorTotalDuration trajectoryInspectorTtft trajectoryLaneInput
+    trajectoryLaneModel trajectoryLaneTools trajectoryLoadEarlier trajectoryLoadError
+    trajectoryMetricCacheHit trajectoryMetricCacheRead trajectoryMetricInputTokens
+    trajectoryMetricLlmMs trajectoryMetricOutputTokens trajectoryMetricSteps
+    trajectoryMetricTokPerS trajectoryMetricToolMs trajectoryMetricTtft trajectoryMetricTurns
+    trajectoryMetrics trajectorySelectSession trajectoryTimeline trajectoryTitle
+    trajectoryToolCallOnly trajectoryToolbarCalls trajectoryToolbarDuration
+    trajectoryToolbarSearch trajectoryToolbarTurns turnTimeline unpin
+    """.split()  # noqa: SIM905 — a 213-element list literal would be 213 lines
+)
+
+_TOP_LEVEL_FLOOR: frozenset[str] = frozenset(
+    """
+    account acp admin adminAgents adminAudit adminProviders adminSso adminUsers advancedSettings
+    agentConfig agentSelector agent_errors apiErrors app auth backup browserViewer
+    browserWorkspace channels chat chatUsage chatWelcome common connectors consoleBubble cos
+    cronJobs desktopChrome embedding environments errors experts header heartbeat invite
+    knowledgeBases language layout login mbtiPage mediaGeneration memory mention modelConfig
+    models nav observability pageShell personalization plugins proactiveConfig projects
+    providers pwa remoteAndroid remoteBrowser remoteDesktop remoteDesktopHub scenes security
+    sessions setupWizard skillPackages skills slash storage stream_errors subagents teamRuns
+    terminal theme tls tokenUsage toolFeedback toolSettings tools upload user voice wizard
+    workbench workspace
+    """.split()  # noqa: SIM905 — an 82-element list literal would be 82 lines
+)
+# fmt: on
+
+
+def _assert_chat_watermark(en: dict, zh: dict) -> None:
+    """Dynamic ``chat.*`` waterline: read both bundles, compare to the floor.
+
+    ``set(en["chat"]) == set(zh["chat"])`` only catches a key one locale lost. The
+    floor is the external baseline that also catches a key *both* locales lost —
+    the failure the old hand-bumped count guarded against.
+    """
+    assert set(en["chat"]) == set(zh["chat"]), "dashboard chat.* must be paired"
+    for locale, table in (("zh", zh), ("en", en)):
+        lost = sorted(_CHAT_KEYS_FLOOR - set(table["chat"]))
+        assert not lost, f"{locale} chat.* lost key(s) — {lost}"
+
+
+def _assert_top_level_matches_floor(data: dict, locale: str) -> None:
+    """``data``'s top-level namespaces must be exactly ``_TOP_LEVEL_FLOOR``.
+
+    A duplicated block from a concurrent writer makes the live set a strict
+    superset; a removed/renamed namespace makes it a strict subset. Both report
+    the namespace names rather than "82 != 83".
+    """
+    live = set(data)
+    if live == _TOP_LEVEL_FLOOR:
+        return
+    missing = sorted(_TOP_LEVEL_FLOOR - live)
+    extra = sorted(live - _TOP_LEVEL_FLOOR)
+    raise AssertionError(
+        f"{locale} top-level namespaces drifted from the frozen floor — "
+        f"missing={missing} unexpected={extra}"
+    )
+
+
+def test_dashboard_locale_floors_are_intact():
+    """Self-check: the frozen floors carry the expected names, duplicate-free."""
+    assert len(_CHAT_KEYS_FLOOR) == 213, "the frozen chat floor is 213 keys"
+    assert len(_TOP_LEVEL_FLOOR) == 82, "the frozen top-level floor is 82 namespaces"
+
+
+# ── the ``projects.*`` namespace floor (P3-40) ───────────────────────────────
+#
+# The namespace tests below used to pin the size as a literal
+# (``len(zh["projects"]) == 276``). That watermark lived *outside* the bundle and
+# had to be bumped by hand on every locale addition, so it drifted: P2-6 found it
+# stale on HEAD 3bb5e1e5 (264 written, 271 read ⇒ six assertions red before that
+# card even started). P3-40 reads the size from the bundle instead, and freezes the
+# thing that really is a contract — the inventory of keys the namespace may never
+# lose. Deliberately monotonic: adding a locale key needs no edit here, while
+# dropping one — from either locale, or from both at once, which ``set(en) ==
+# set(zh)`` alone cannot see — fails and names the key.
+#
+# Not a second hard-coded watermark: the count is never written down, and a growing
+# namespace never touches this list.
+#
+# Regenerate after a deliberate removal:
+#   python -c "import json;print(' '.join(sorted(json.load(open('dashboard/src/locales/zh.json'))['projects'])))"
+_PROJECTS_KEYS_FLOOR: frozenset[str] = frozenset(
+    """
+    archive archiveConfirmDesc archiveConfirmTitle archiveFailed archived assetBind
+    assetDocCount assetEmpty assetOpen assetTitle attachFile attachmentBadType
+    attachmentDeleteConfirm attachmentDownload attachmentTooLarge attachmentUpload
+    attachmentUploaded attachmentsEmpty attachmentsTitle backToList boardActionAssigned
+    boardActionCreated boardActionDeleted boardActionDispatched boardActionStatusChanged
+    boardActionUpdated boardAdd boardAddBlocked boardAddPlaceholder boardCreateFailed
+    boardCreated boardDispatch boardDropInvalid boardMoveFailed boardReadOnly
+    boardSearchPlaceholder boardShowTerminal boardTimeline boardTimelineEmpty
+    boardTimelineLoadFailed boardTimelineTitle cfAdd cfDeleteConfirm cfEmpty cfInvalid cfKey
+    cfLabel cfOptions cfRequired cfType cfTypeDate cfTypeNumber cfTypeSelect cfTypeText
+    chipAgent chipAssignee chipCustomFields chipDueAt chipMore chipParentTask chipPriority
+    chipProject chipStartAt chipStatus chipSubtasks chipTags conclude concludedByUnknown
+    conclusionBadge conclusionBy configTitle connectorAdd connectorAvailable connectorNone
+    connectorTitle connectorUnavailable connectorUsing create createAndContinue createFailed
+    createTaskBreadcrumb createTaskDescription createTaskSubmit createTaskTitle created
+    createdAt cronCreate cronDeleteConfirm cronDisable cronEnable cronNone cronOwnedByOther
+    cronPromptHidden cronTitle customFieldsTitle detailSubtitle dueAt dynamicComingSoon
+    dynamicPlaceholder editTaskSaved editTaskSubmit editTaskTitle empty emptyDesc expertAdd
+    expertNone expertTitle feedComposerPlaceholder feedEmpty feedEmptyFiltered
+    feedEmptyRelevance feedFilterAll feedFilterByAuthor feedFilterClear feedMentions feedPost
+    feedRelevanceMine goal goalPlaceholder instructionEmpty instructionPlaceholder
+    instructionSaved instructionTitle instructionTooLong kbId kbUnbind loadFailed memberAdd
+    memberId memberIdRequired memberRemoveConfirm memberRemoveFailed memberRemoved memberRole
+    memberRoleAdmin memberRoleMember memberRoleOwner memberRoleUpdated memberRoleViewer
+    memberSaveFailed memberSaved memberSince memberSubject memberTitle members membersEmpty
+    membersHint memoryDenied memoryDeniedHint memoryEmpty memoryEmptyHint memoryError
+    memoryNoAgent memoryNoAgentHint name namePlaceholder nameRequired noAgentMembers noGoal
+    noMembers noTags noTasks noUserMembers overview owner pickAssignee pickParentTask pickTag
+    pickerEmptyTeams pickerGroupExperts pickerGroupTeams projectId quickInputFailed
+    quickInputNoAgent quickInputPlaceholder quickInputRecipientEmpty quickInputRecipientFilter
+    quickInputRecipientListLabel quickInputRecipientTrigger quickInputRefRemoved
+    quickInputRefTask quickInputSend quickInputSending quickInputSent quickInputTarget roleAdmin
+    roleMember roleOwner roleViewer skillAdd skillNone skillStale skillTitle skillUnavailable
+    startAt status statusActive statusArchived statusCancelled statusCompleted statusDraft
+    statusPaused subjectAgent subjectIdHintAgent subjectIdHintTeam subjectIdHintUser subjectTeam
+    subjectUser subtitle switchToAgent tabAssets tabDynamic tabMemory tabPlan tabTasks tagColor
+    tagColorInvalid tagCreate tagDeleteConfirm tagInvalid tagName tagNameInvalid tagsEmpty
+    tagsTitle taskDetailAddAgent taskDetailAttachments taskDetailBack taskDetailDeps
+    taskDetailDescription taskDetailDiscuss taskDetailExecutor taskDetailIssue
+    taskDetailNotFound taskDetailParent taskDetailSave taskDetailTimeDaysAgo taskDetailTimeToday
+    taskDetailTimeYesterday taskDetailTimeline taskDetailTimelineCreated
+    taskDetailTimelineDispatched taskDetailTimelineEmpty taskDetailTimelineUpdated
+    taskDetailTitle taskListColumnAssignee taskListColumnDueAt taskListColumnPriority
+    taskListColumnStartAt taskListColumnStatus taskListColumnTags taskListColumnTitle
+    taskListColumnUpdatedAt taskListEmpty taskListFilterKeyword taskListFilterStatus
+    taskListTitle taskPriority taskStatus taskStatusBlocked taskStatusCancelled taskStatusDoing
+    taskStatusDone taskStatusPlanning taskStatusReview taskStatusTodo taskTitle tasks tasksEmpty
+    tasksHint title unavailable unconclude update updateFailed updated updatedAt
+    """.split()  # noqa: SIM905 — a 276-element list literal would be 276 lines
+)
+
+
+def _assert_projects_watermark(en: dict, zh: dict) -> None:
+    """Dynamic ``projects.*`` waterline: read both bundles, compare to the floor.
+
+    ``set(en) == set(zh)`` only catches a key one locale lost. The floor is the
+    external baseline that also catches a key *both* locales lost — the failure the
+    old hand-bumped count guarded against.
+    """
+    assert set(en["projects"]) == set(zh["projects"]), "dashboard projects.* must be paired"
+    for locale, table in (("zh", zh), ("en", en)):
+        lost = sorted(_PROJECTS_KEYS_FLOOR - set(table["projects"]))
+        assert not lost, f"{locale} projects.* lost key(s) — {lost}"
+
+
 def test_dashboard_projects_namespace_is_paired_and_localized():
     """The new ``projects.*`` keys — namespace-level parity, frozen zh wording.
 
@@ -241,9 +457,13 @@ def test_dashboard_projects_namespace_is_paired_and_localized():
     en = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
     zh = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
     assert set(en["projects"]) == set(zh["projects"])
-    # 208+4+22+4+1 = 239, + 6 batch 8 (PLAN §5) = 245, + 2 batch 19 = 247, + 7 batch 12 = 254,
-    # + 8 batch 20 (T-86 项目记忆 Tab：tabMemory + memoryEmpty/Hint/Denied/Hint/Error/NoAgent/Hint) = 262.
-    assert len(zh["projects"]) == 262
+    # Namespace history (the old hand-maintained watermark): 208+4+22+4+1 = 239, + 6 batch 8
+    # (PLAN §5) = 245, + 2 batch 19 = 247, + 7 batch 12 = 254, + 1 A6 ``projects.tagNameInvalid``
+    # (PLAN §A6.2) = 255, + 1 A-TAGS-FIX ``projects.tagColorInvalid`` = 256, + 8 batch 20
+    # (T-86 项目记忆 Tab) = 264 — already stale there (the bundle read 271), + 5 C4-CREATE
+    # (P2-6 TaskCreateModal) = 276. P2-6 only re-froze that literal, which drifts again on the
+    # next locale key; P3-40 drops it (see ``_PROJECTS_KEYS_FLOOR`` above).
+    _assert_projects_watermark(en, zh)
     # R6 copy change: values only, keys untouched.
     assert zh["projects"]["taskStatusReview"] == "审核中"
     assert zh["projects"]["taskStatusBlocked"] == "已阻塞"
@@ -342,7 +562,7 @@ def test_dashboard_projects_new_keys_are_present_in_both_locales():
 # is therefore pinned to its verbatim zh string from PLAN.md §11.1.
 _BATCH2_PROJECTS_ZH: dict[str, str] = {
     "tabDynamic": "动态",
-    "tabPlan": "计划",
+    "tabPlan": "看板",
     "tabTasks": "任务",
     "tabAssets": "知识库",
     "dynamicPlaceholder": "动态流即将上线",
@@ -418,8 +638,7 @@ def test_batch2_projects_keys_exist_in_both_locales():
         assert key in zh["projects"], f"zh projects.{key} missing"
         assert key in en["projects"], f"en projects.{key} missing"
         assert en["projects"][key] != "", f"en projects.{key} is empty"
-    assert len(zh["projects"]) == 262
-    assert len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
 
 
 # ── batch 3 (T-I18N3): edit-dialog labels + two rejection codes ──────────────
@@ -508,12 +727,15 @@ def test_no_duplicate_keys_inside_any_dashboard_object():
         assert _duplicate_keys_in_one_object(path) == [], locale
         data = json.loads(path.read_text(encoding="utf-8"))
         # 82 = 81 + the `teamRuns` namespace added by T-20 (RunDetail page). This guard
-        # exists to catch a duplicated *top-level block* from concurrent writers; an
-        # intentional new namespace moves the number on purpose. Whoever adds the next
-        # namespace bumps it again (and says so).
-        # `chat` 211 -> 213: upstream v1.0.2b5 added `remoteExpert` / `expertRemoteBadge`
-        # (both locales) without touching this fork-only guard.
-        assert len(data) == 82 and len(data["chat"]) == 213, locale
+        # exists to catch a duplicated *top-level block* from concurrent writers — which is
+        # exactly why the frozen inventory, not a count, is what it compares. `chat`
+        # 211 -> 213: upstream v1.0.2b5 added `remoteExpert` / `expertRemoteBadge`.
+        _assert_top_level_matches_floor(data, locale)
+    # The `chat` waterline was pinned here as `len(data["chat"]) == 213` too; it is the
+    # same namespace waterline as the S0/T2.6 case above, so it shares that floor.
+    en_all = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
+    zh_all = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
+    _assert_chat_watermark(en_all, zh_all)
 
 
 def test_the_projects_block_is_written_once():
@@ -575,7 +797,7 @@ def test_batch4_project_keys_are_localized_per_key():
         # L10: the PLAN table's bold / footnote markers are never part of a value.
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # The interpolation placeholder must survive transcription verbatim.
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert en["projects"]["quickInputTarget"] == "To {{name}}"
@@ -638,7 +860,7 @@ def test_qi_recipient_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # The reused strings must keep their existing wording (no silent redefinition).
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert zh["projects"]["quickInputNoAgent"] == "请先在项目配置中绑定专家。"
@@ -661,7 +883,7 @@ def test_batch6_picker_empty_teams_is_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # The reused keys must keep their wording: this batch adds exactly one key.
     assert set(_T_P6_I18N_PROJECT_KEYS) <= set(zh["projects"])
     for reused, expected in (
@@ -699,7 +921,7 @@ def test_batch8_feed_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # Keys the feed keeps rendering must survive (reused, never redefined).
     for reused in ("tabDynamic", "dynamicPlaceholder", "taskDetailTimeline"):
         assert reused in zh["projects"], reused

@@ -421,14 +421,10 @@
 }
 
 .userText {
-  background: linear-gradient(
-    135deg,
-    var(--fn-color-brand) 0%,
-    var(--fn-color-brand-soft) 100%
-  );
-  color: #fff;
+  background: var(--fn-bg-group);
+  color: var(--fn-text-primary);
   padding: 10px 14px;
-  border-radius: 16px 16px 6px 16px;
+  border-radius: 14px;
   font-size: 14px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -449,15 +445,15 @@
 }
 
 .assistantText {
-  background: rgba(15, 23, 42, 0.025);
+  background: var(--fn-bg-card);
   padding: 10px 14px;
   border-radius: 14px;
-  border: none;
-  font-size: 15px;
-  line-height: 1.7;
+  border: 1px solid var(--fn-border-secondary);
+  font-size: 14px;
+  line-height: 1.75;
   color: var(--fn-text-primary);
   word-break: break-word;
-  box-shadow: none;
+  box-shadow: var(--fn-shadow-sm);
   position: relative;
   overflow: visible;
 
