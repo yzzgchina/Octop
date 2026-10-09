@@ -20,6 +20,7 @@ from octop.infra.agents.teams.pipeline import (
     PHASE_TRANSITIONS,
     PHASE_ZH,
     PHASES,
+    ROLES,
     ROLLBACK_LIMIT,
     TIER_SPEC,
     TIER_ZH,
@@ -215,6 +216,31 @@ def test_normalize_tier_refuses_unknown_values_instead_of_defaulting(value: obje
     assert "快速档" in error.details["allowed"]
 
 
+#: The 12 frozen role names (P3-41) — the external baseline the runtime vocabulary is
+#: reconciled against, exactly like ``_PROJECTS_KEYS_FLOOR`` (P3-40). The live set is
+#: read at run time and must contain every name below. Adding a role needs no edit here
+#: (the equality/parity assertion already fails on that, by name); dropping or
+#: *renaming* one — the failure the hand-written ``len(...) == 12`` could not see,
+#: because a rename keeps the length — is caught and the missing name is reported.
+#:
+#: Regenerate after a deliberate removal/rename:
+#:   uv run python -c "from octop.infra.agents.teams.pipeline import ROLES; print(' '.join(ROLES))"
+# fmt: off
+_TEAM_ROLES_FLOOR: frozenset[str] = frozenset(
+    """
+    pm architect researcher ui backend frontend
+    dba sec reviewer qa devops docs
+    """.split()  # noqa: SIM905 — a 12-element list literal would be 12 lines
+)
+# fmt: on
+
+
+def _assert_role_vocabulary_matches_floor(actual: frozenset[str]) -> None:
+    """The runtime role vocabulary must still carry every frozen role name."""
+    lost = sorted(_TEAM_ROLES_FLOOR - set(actual))
+    assert not lost, f"team role vocabulary lost role(s) — {lost}"
+
+
 def test_tier_spec_keeps_the_authoritative_caps() -> None:
     assert TIERS == ("quick", "standard", "strict")
     assert set(TIER_ZH) == set(TIERS)
@@ -230,7 +256,11 @@ def test_tier_spec_keeps_the_authoritative_caps() -> None:
     assert TIER_SPEC["strict"].role_cap == 12
     assert TIER_SPEC["strict"].acceptance_cap is None
     assert TIER_SPEC["strict"].dispatch_cap is None
-    assert len(TIER_SPEC["strict"].default_roles) == 12
+    # P3-41：旧断言 `len(TIER_SPEC["strict"].default_roles) == 12` 只是 ROLES 长度的回声
+    # （strict 档的 default_roles 就是 `ROLES` 本身）。改为现读对账：strict 档必须是完整
+    # 角色词表，且 12 个冻结角色名一个不少。
+    assert TIER_SPEC["strict"].default_roles == ROLES
+    _assert_role_vocabulary_matches_floor(frozenset(TIER_SPEC["strict"].default_roles))
 
 
 def test_quick_tier_trims_the_phase_sequence_and_keeps_clarify_and_deliver() -> None:
