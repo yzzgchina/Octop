@@ -46,11 +46,11 @@ import DynamicTab from "./DynamicTab";
 import ProjectMemoryTab from "./ProjectMemoryTab";
 import RightRail from "./RightRail";
 import QuickInput from "./QuickInput";
-import TaskCreateModal, {
-  type TaskCreateValues,
-  type TaskPatchValues,
-} from "./TaskCreateModal";
+import TaskCreateModal, { type TaskPatchValues } from "./TaskCreateModal";
 import TaskDetailPanel, { hasTaskDetailParam } from "./TaskDetailPanel";
+// ★★ 收敛（P2-5）：`taskToValues()` 唯一出处 = `./taskCreateValues`
+// （本文件原有的那份同名私有拷贝已删除 —— 见该模块的 docstring）。
+import { taskToValues } from "./taskCreateValues";
 import TaskListView from "./TaskListView";
 import styles from "./index.module.less";
 import TagsManager from "./TagsManager";
@@ -119,32 +119,6 @@ function parseTab(raw: string | null): DetailTabKey {
   return found ? found.key : "plan";
 }
 
-/**
- * `ProjectTask` → 编辑器值的适配器（PLAN §5.1：**不复制字段定义**，只做形状映射；
- * 字段类型全部来自 `TaskCreateModal` 导出的 `TaskCreateValues`）。
- */
-function taskToValues(task: ProjectTask): TaskCreateValues {
-  return {
-    task_id: task.task_id,
-    title: task.title,
-    description: task.description,
-    status: task.status,
-    priority: task.priority,
-    assignee:
-      task.assignee_type && task.assignee_id
-        ? { type: task.assignee_type, id: task.assignee_id }
-        : null,
-    tag_ids: (task.tags ?? []).map((tag) => tag.tag_id),
-    start_at: task.start_at,
-    due_at: task.due_at,
-    parent_id: task.parent_id,
-    deps: task.deps ?? [],
-    custom_fields: Object.fromEntries(
-      (task.custom_fields ?? []).map((field) => [field.field_id, field.value]),
-    ),
-  };
-}
-
 function ProjectDetailPage() {
   const { t } = useTranslation();
   const { projectId = "" } = useParams<{ projectId: string }>();
@@ -155,13 +129,12 @@ function ProjectDetailPage() {
 
   // Tab 表达 = 查询参数 `?tab=`（PLAN §4）：不新增顶层路由，刷新保留。
   const [searchParams, setSearchParams] = useSearchParams();
-  /** `?task=` 存在即以详情为准（缺 `tab` 参数同样进详情，见 T-G4 的判据）。 */
+  /** `?task=` 存在即渲染详情（缺 `tab` 参数同样进详情，见 T-G4 的判据）。 */
   const detailOpen = hasTaskDetailParam(searchParams);
   const detailTaskId = searchParams.get("task") ?? "";
-  // 详情在主区内替换任务列表，但 `tab=` 语义不变：进详情时高亮恒为 tasks。
-  const activeTab: DetailTabKey = detailOpen
-    ? "tasks"
-    : parseTab(searchParams.get("tab"));
+  // 形态 C（PLAN §A5.4）：`?task=` 不再改写 `tab=` —— 详情占右栏槽位，看板/列表
+  // 保持原位，Tab 高亮完全由 URL 的 `tab=` 决定（缺省与非法值一律回落 `plan`）。
+  const activeTab: DetailTabKey = parseTab(searchParams.get("tab"));
   const selectTab = useCallback(
     (next: DetailTabKey) => {
       const updated = new URLSearchParams(searchParams);
@@ -234,13 +207,12 @@ function ProjectDetailPage() {
   const canManageConfig = canManageMembers;
 
   /**
-   * `TaskListView` 的行点击入口。**任务详情页属第四批范围**（PLAN §0「本轮不
-   * 做」清单）→ 这里只保留入口契约，不自造详情视图；第四批接线时替换本回调。
+   * 打开详情（`TaskListView` 行点击与 `Board` 卡片点击共用，PLAN §A5.4 形态 C）：
+   * **只写 `task`** —— 详情占右栏槽位，`tab=` 保持原样（看板/列表不被替换）。
    */
   const openTask = useCallback(
     (taskId: string) => {
       const updated = new URLSearchParams(searchParams);
-      updated.set("tab", "tasks");
       updated.set("task", taskId);
       // `push`（有意区别于 `?tab=` 的 replace）：详情是「进入下一层」，
       // 浏览器后退可回列表（PLAN §4.1）。react-router 的 `setSearchParams`
@@ -250,11 +222,10 @@ function ProjectDetailPage() {
     [searchParams, setSearchParams],
   );
 
-  /** 返回列表：移除 `task`，保留 `tab=tasks`（replace，不留详情历史项）。 */
+  /** 关闭详情：**只删 `task`**（replace，不留详情历史项），`tab=` 不动 ⇒ 右栏恢复。 */
   const closeTask = useCallback(() => {
     const updated = new URLSearchParams(searchParams);
     updated.delete("task");
-    updated.set("tab", "tasks");
     setSearchParams(updated, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -400,8 +371,14 @@ function ProjectDetailPage() {
       actions={headerActions}
     >
       {/* 布局（PLAN §4）：主区（TabBar + 当前 Tab 内容）在前，右栏在后 ——
-          S6 要求窄屏堆叠时 DOM 顺序即「主区 → 右栏」，不得用 CSS order 提前。 */}
-      <div className={styles.detailLayout}>
+          S6 要求窄屏堆叠时 DOM 顺序即「主区 → 右栏」，不得用 CSS order 提前。
+          形态 C（PLAN §A5.4）：`?task=` 命中时详情接管第 2 轨（右栏槽位），看板保持
+          可见（选中态竖条的前提）。四档宽度值全部来自 index.module.less 的媒体查询，
+          本组件**只**置 `data-detail-open` 状态属性（内联 --detail-col 会压过样式表）。 */}
+      <div
+        className={styles.detailLayout}
+        data-detail-open={detailOpen ? "true" : "false"}
+      >
         <div className={styles.mainColumn} data-testid="project-main-column">
           {/* G2（PLAN §2.3）：概览已迁入右栏 → 主区此槽位改为**快速输入**
               （T-G3 交付；`archived` 由父层已知的项目状态传入）。 */}
@@ -434,23 +411,13 @@ function ProjectDetailPage() {
                 tasks={tasks}
                 canEdit={canEdit}
                 onChanged={load}
+                onOpenTask={openTask}
+                selectedTaskId={detailTaskId}
               />
             </section>
           ) : null}
 
-          {activeTab === "tasks" && detailOpen ? (
-            <TaskDetailPanel
-              projectId={project.project_id}
-              task={detailTask}
-              loading={loading}
-              canEdit={canEdit}
-              tasks={tasks}
-              onBack={closeTask}
-              onChanged={load}
-            />
-          ) : null}
-
-          {activeTab === "tasks" && !detailOpen ? (
+          {activeTab === "tasks" ? (
             <>
               <TaskListView
                 projectId={project.project_id}
@@ -477,15 +444,34 @@ function ProjectDetailPage() {
           ) : null}
         </div>
 
-        <RightRail
-          projectId={project.project_id}
-          project={project}
-          timeZone={timeZone}
-          statusLabel={t(STATUS_LABEL_KEYS[project.status])}
-          statusColor={STATUS_COLORS[project.status]}
-          canManageConfig={canManageConfig}
-          canManageMembers={canManageMembers}
-        />
+        {/* 形态 C（PLAN §A5.4）：右栏槽位（第 2 轨）条件渲染 —— `?task=` 命中时
+            `RightRail` **不挂载**（让位，非 display:none 伪装），详情在同一槽位渲染；
+            关闭（←/✕ ⇒ closeTask 删 `task`）后右栏原样恢复。 */}
+        {detailOpen ? (
+          <TaskDetailPanel
+            projectId={project.project_id}
+            task={detailTask}
+            loading={loading}
+            canEdit={canEdit}
+            tasks={tasks}
+            // `P2-5` 五段：meta 行的项目 chip 与「人 / 执行主体」两槽的名字解析
+            // 都用**页级已加载的数据**（`project.name` / `members`）—— 不新增读取环。
+            projectName={project.name}
+            members={members}
+            onBack={closeTask}
+            onChanged={load}
+          />
+        ) : (
+          <RightRail
+            projectId={project.project_id}
+            project={project}
+            timeZone={timeZone}
+            statusLabel={t(STATUS_LABEL_KEYS[project.status])}
+            statusColor={STATUS_COLORS[project.status]}
+            canManageConfig={canManageConfig}
+            canManageMembers={canManageMembers}
+          />
+        )}
       </div>
 
       <Modal

@@ -20,16 +20,110 @@ REGRESSION = "regression"
 
 STATE_LABEL = {OK: "绿", FAIL: "红", UNKNOWN: "未知"}
 
-# ★ 冻结的 10 条 id（`SL-1` · `K` 批追加 `AUD-S6`）· 冻结的 8 条硬判（`SL-2`）
-# ★ `FROZEN_IDS` 有顺序语义（`current_tree.py` 按它排序）⇒ `AUD-S6` 追加在末尾，不打乱既有顺序
+# ★ 冻结的 22 条 id（`SL-1` · `K` 批追加 `AUD-S6` · `P1-2` 批追加 `AUD-C1…C10` · `P1-4` 追加 `AUD-C11`
+#   · `P1-17` 追加 `AUD-C12`）
+# ★ 冻结的 19 条硬判（`SL-2` · `AUD-C1…C9` 追加；`P1-4` 追加 `AUD-C11`；`P1-17` 追加 `AUD-C12`；
+#   ★ `AUD-C10` 是 `guard` 类，不入硬判白名单）
+# ★ `FROZEN_IDS` 有顺序语义（`current_tree.py` 按它排序）⇒ 新增 id **追加在末尾**，不打乱既有顺序
 FROZEN_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", "AUD-G1", "AUD-G2",
-              "AUD-S6")
-HARD_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", "AUD-S6")
+              "AUD-S6",
+              "AUD-C1", "AUD-C2", "AUD-C3", "AUD-C4", "AUD-C5", "AUD-C6", "AUD-C7", "AUD-C8",
+              "AUD-C9", "AUD-C10", "AUD-C11", "AUD-C12")
+HARD_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", "AUD-S6",
+            "AUD-C1", "AUD-C2", "AUD-C3", "AUD-C4", "AUD-C5", "AUD-C6", "AUD-C7", "AUD-C8",
+            "AUD-C9", "AUD-C11", "AUD-C12")
 
-# ★ `AUD-G2` 的冻结锚点（`Makefile @207` 逐字）
+# ★★ `AUD-G2` 的冻结判据 = `Makefile` 的 `all:` **必需腿序列**（★ 结构化比较 · **不是**逐字行冻结）
+#   ★ 为什么不再是逐字（`P3-23`）：`all:` 那一行会**合法地**长出新腿（`lint-frontend` 就是这么加进来的）
+#     ⇒ 逐字冻结的常量永远跟不上 ⇒ **恒红门**（一道永远红的门 = 没有门），还会淹没真回归。
+#     ★ 逐字冻结是错的工具 ⇒ 改成：断言必需腿**按序在位**（允许合法新增腿）。
+#   ★ 判据语义（`criteria/makefile_freeze.py`）：`format-all` 必须在**首位**（写后读 · 与 `AUD-C3` 同因），
+#     其余必需腿必须**按序出现**；★ 行号**不参与判定**（`all:` 行号漂移 = 合法编辑）。
 MAKEFILE_NAME = "Makefile"
-MAKEFILE_FROZEN_LINENO = 207
-MAKEFILE_FROZEN_LINE = "all: format-all lint typecheck test test-frontend"
+MAKEFILE_FROZEN_LINENO = 207  # ★ 仅 `AUD-C3` 的显示锚点；★ `AUD-G2` 已不引用它（不再冻结行号）
+MAKEFILE_ALL_REQUIRED = ("format-all", "lint", "lint-frontend", "typecheck", "test", "test-frontend")
+MAKEFILE_ALL_WRITER = MAKEFILE_ALL_REQUIRED[0]  # ★ 改树的写者 ⇒ 必须居 `all:` 依赖序列**首位**
+
+# ─── ★ `P1-2` 新增判据的**单一出处**常量（★ 判据模块一律引用本处 ⇒ 禁第二份拷贝）──────
+# ★ `AUD-C1` `dashboard` 顶层命名空间重复键的判据面（★ 逐字文件清单 · 判 `chat` 出现次数）
+LOCALE_FILES = ("dashboard/src/locales/en.json", "dashboard/src/locales/zh.json")
+LOCALE_NAMESPACE = "chat"
+# ★ `AUD-C2` `Makefile` 目标名与**前端 runner 词表**（★ 唯一出处 ⇒ 判据不得另列词表）
+MAKEFILE_TEST_TARGET = "test:"
+MAKEFILE_FRONTEND_TARGET = "test-frontend:"
+MAKEFILE_ALL_TARGET = "all:"
+FRONTEND_RUNNER_TOKENS = ("vitest", "npm run test", "npx tsc", "tsc -b")
+FRONTEND_TEST_GLOB = "dashboard/**/*.test.ts"
+FRONTEND_TEST_GLOB_TSX = "dashboard/**/*.test.tsx"
+# ★ `AUD-C4` 冻结的 skip 门控清单（★ **独立出处 = 本表**；★ 禁从当次 `pytest -rs` 输出抄）
+SKIP_GATE_LEDGER = {
+    "tests/integration/test_experts_api.py": 4,
+    "tests/integration/test_onnx_models_api.py": 1,
+    "tests/integration/test_postgresql_checkpoint_history.py": 1,
+    "tests/integration/test_postgresql_control_plane.py": 7,
+    "tests/integration/test_skills_api.py": 1,
+    "tests/live/conftest.py": 1,
+    "tests/live/test_channel_probe.py": 2,
+    "tests/live/test_connector_probe.py": 1,
+    "tests/live/test_oss_storage.py": 1,
+    "tests/support/secrets.py": 1,
+    "tests/unit/agents/test_agent_manager.py": 1,
+    "tests/unit/agents/test_onnx_service.py": 3,
+    "tests/unit/agents/test_skill_packages.py": 2,
+    "tests/unit/api/test_terminal_sessions.py": 1,
+    "tests/unit/backend/test_resolver.py": 1,
+    "tests/unit/backup/test_snapshot.py": 1,
+    "tests/unit/browser/test_browser_setup.py": 1,
+    "tests/unit/cli/test_init_cmd.py": 1,
+    "tests/unit/db/test_db_pool.py": 1,
+    "tests/unit/gateway/test_attachment_path_resolution.py": 2,
+    "tests/unit/infra/utils/test_host_dirs.py": 4,
+    "tests/unit/skills/test_workspace_catalog.py": 1,
+    "tests/unit/test_wizard_password.py": 1,
+}
+# ★ `AUD-C6` 符号 → 唯一出处（★ `forbidden` = 冻结的**非出处**模块 ⇒ 双向判）
+SYMBOL_HOMES = (
+    {
+        "symbol": "pinned",
+        "home": "src/octop/api/routers/chat/sessions.py",
+        "forbidden": ("src/octop/api/routers/chat/serialize.py",),
+    },
+)
+SYMBOL_SCAN_DIR = "src/octop/api/routers/chat"
+# ★ `AUD-C7` 死表基线：★ 只判 `NNN > DEAD_TABLE_BASELINE_MAX` 的迁移新建表（防恒红）
+DEAD_TABLE_BASELINE_MAX = 19
+MIGRATIONS_DIR = "src/octop/infra/db/migrations"
+# ★ `AUD-C8` `project_tasks.thread_id` 的**允许**写点（★ 唯一派单入口）
+DISPATCH_TABLE = "project_tasks"
+DISPATCH_COLUMN = "thread_id"
+DISPATCH_WRITE_ALLOWED = ("src/octop/infra/projects/service.py",)
+# ★ `AUD-C9` 构建产物 vs 源资产（★ `R8`：判据必须**打印基准目录**）
+DASHBOARD_ARTIFACT_REL = "src/octop/dashboard"
+DASHBOARD_PUBLIC_REL = "dashboard/public"
+# ★ `AUD-C10` 树指纹（★ 单一字段 · 派生自各判据 `input_digest` ⇒ 不复制常量表）
+FINGERPRINT_ID = "AUD-C10"
+# ★ `AUD-C11` 绑定地址单源（序号 27）：★ 输入在**仓库工作区之外** ⇒ 参数化探测根供夹具注入
+#   （★ 判别性对照一律在 `/tmp` 夹具里做 ⇒ 不碰真实 `~`）· ★ `R8`：判据必须**打印实际探测的基准目录**
+BIND_LAUNCHD_DIR_ENV = "OCTOP_AUDIT_LAUNCHD_DIR"
+BIND_OCTOP_HOME_ENV = "OCTOP_AUDIT_OCTOP_HOME"
+BIND_LAUNCHD_DIR_REL = "Library/LaunchAgents"     # ★ 相对 `$HOME`
+BIND_OCTOP_HOME_REL = ".octop"                    # ★ 相对 `$HOME`
+BIND_PLIST_NAME = "octop.plist"
+BIND_CONFIG_NAME = "config.json"
+BIND_HOST_FLAG = "--host"
+BIND_CONFIG_KEY = "bind_host"
+# ★ `AUD-C12` `inScope` 残留 + 覆盖完整性（`P1-7` 的 D-9 检查器 · `P1-17` 迁入受管位置并接线）：
+#   ★ 输入一律**显式**（承 `R8`：调用方必须显式传、并打印基准目录）⇒ ★ 判据模式的单一出处在这里
+#   （★ 缺 ⇒ 该判据判 `UNKNOWN` ⇒ **不是绿** ⇒ 无假绿通道 · 承 `AUD-C11` 的同款处置）
+INSCOPE_RUN_DIR_ENV = "OCTOP_AUDIT_RUN_DIR"
+INSCOPE_CHANGED_LIST_ENV = "OCTOP_AUDIT_CHANGED_LIST"
+INSCOPE_GIT_RANGE_ENV = "OCTOP_AUDIT_GIT_RANGE"
+INSCOPE_TASKS_NAME = "TASKS.json"
+# ★★ lead 裁定（`P1-17.notes` · 逐字）：卡的 `status` 为 `pending`/`in_progress` 时，其 `inScope`
+#   指向的路径允许尚不存在（= 计划新建，不判「③ 路径不存在」命中）；`status` 为 `completed` 时
+#   仍不存在 ⇒ 判红（该卡声称改了却查无此文件）。★ 其它/缺失 `status` ⇒ 判据判 `UNKNOWN`（fail-closed）
+INSCOPE_MISSING_ALLOWED_STATUS = ("pending", "in_progress")
+INSCOPE_COMPLETED_STATUS = "completed"
 
 EXEMPTIONS_REL = "scripts/audit/exemptions.json"
 EXEMPTION_SCHEMA = "octop.audit.exemptions/1"
@@ -232,7 +326,7 @@ def load_exemptions(root):
     for entry in entries:
         cid = entry.get("criterion")
         if cid not in FROZEN_IDS:
-            violations.append("H9 criterion=%r 不在冻结 9 条 id 内" % (cid,))
+            violations.append(f"H9 criterion={cid!r} 不在冻结 {len(FROZEN_IDS)} 条 id 内")
         line = entry.get("line")
         if not isinstance(line, int) or isinstance(line, bool) or line < 1:
             violations.append("H4 line 必须 ≥ 1 的整数：%r" % (line,))
@@ -249,6 +343,25 @@ def digest_files(root, relpaths):
             h.update(hashlib.sha256((pathlib.Path(root) / item).read_bytes()).hexdigest().encode("ascii"))
         except OSError:
             h.update(b"<unreadable>")
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def tree_fingerprint(entries):
+    """★ `AUD-C10` 树指纹 = **单一**字段 · 派生自各判据 `input_digest`（★ 不复制常量表）。
+
+    ★ `entries` = `{criterion_id: (files, sha256)}`（= `Result.as_dict()` 的 `input_digest`）；
+    ★ 聚合与**输入顺序无关**（按 id / path 排序）· ★ 与**时刻无关**（只用文件内容 sha256）。
+    """
+    h = hashlib.sha256()
+    for cid in sorted(entries):
+        files, digest = entries[cid]
+        h.update(cid.encode("utf-8"))
+        h.update(b"\0")
+        for item in sorted(set(files)):
+            h.update(item.encode("utf-8"))
+            h.update(b"\0")
+        h.update(str(digest).encode("ascii"))
         h.update(b"\n")
     return h.hexdigest()
 
@@ -355,8 +468,8 @@ def registry_guard_facts(bad_states, empty_inputs):
     violations = []
     ids = [item["id"] for item in REGISTRY]
     if len(ids) != len(FROZEN_IDS) or set(ids) != set(FROZEN_IDS):
-        violations.append("id 集合与冻结 9 条不符（差集 = %s）"
-                          % (sorted(set(ids) ^ set(FROZEN_IDS)) or "重复 id"))
+        violations.append(f"id 集合与冻结 {len(FROZEN_IDS)} 条不符（差集 = "
+                          f"{sorted(set(ids) ^ set(FROZEN_IDS)) or '重复 id'}）")
     for item in REGISTRY:
         if item["id"] in HARD_IDS and item["kind"] != HARD:
             violations.append("硬判 %s 的 kind = %r ≠ hard" % (item["id"], item["kind"]))
@@ -378,4 +491,5 @@ def guard_result(facts):
         return Result(GUARD_ID, GUARD, UNKNOWN, checked=len(FROZEN_IDS),
                       message="%s · %s ⇒ 不得记绿" % (base, " · ".join(facts["violations"])))
     return Result(GUARD_ID, GUARD, OK, checked=len(FROZEN_IDS),
-                  message="%s · id 集合 = 冻结 9 条 · 硬判 kind 白名单 = 7 条 hard" % base)
+                  message=f"{base} · id 集合 = 冻结 {len(FROZEN_IDS)} 条 · "
+                          f"硬判 kind 白名单 = {len(HARD_IDS)} 条 hard")

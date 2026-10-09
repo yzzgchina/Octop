@@ -500,6 +500,7 @@
     "PROJECT_TASK_TAG_INVALID": "That tag does not exist or does not belong to this project.",
     "PROJECT_TASK_DATE_INVALID": "That task date is not valid.",
     "PROJECT_TASK_DISPATCH_INVALID": "This task's assignee is not a runnable agent or team.",
+    "PROJECT_TASK_ASSIGNEE_INVALID": "The assignee must name an existing user.",
     "PROJECT_CUSTOM_FIELD_NOT_FOUND": "Custom field not found.",
     "PROJECT_CUSTOM_FIELD_INVALID": "That custom field definition is not valid.",
     "PROJECT_CUSTOM_FIELD_VALUE_INVALID": "That value does not match the custom field definition.",

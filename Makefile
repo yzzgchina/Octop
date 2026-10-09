@@ -1,12 +1,62 @@
 # Makefile for Octop
 # Usage:
-#   make              - Show this help
-#   make all          - format (BE+FE) + backend lint + typecheck + test (ship bar)
-#   make build        - Build frontend + Python wheel
-#   make publish      - Build + upload to PyPI
+#   make help               - Show this help (default goal)
+#
+# Ship bar / release:
+#   make all                - format-all + lint + lint-frontend + typecheck + test + test-frontend (ship bar)
+#   make build              - Build frontend + Python wheel
+#   make publish            - Build + upload to PyPI
+#   make build-frontend     - npm ci + npm run build -> src/octop/dashboard
+#   make build-wheel        - Build Python wheel + sdist (frontend must already be built)
+#   make publish-test       - Build + upload to TestPyPI (make publish PYPI_REPO=testpypi)
+#
+# Gate targets:
+#   make precommit          - format-all + lint + lint-frontend + typecheck + test-affected + test-frontend (git hook gate)
+#   make test-affected      - pytest --testmon; prints cold-start vs baseline, cold start runs the full backend suite once
+#   make audit              - read-only tree-discipline audit (scripts/audit/current_tree.py); standalone, NOT in all / check-all / CI
+#   make check-all          - lint-all + typecheck-all + test + test-frontend
+#
+# Quality (backend):
+#   make lint               - ruff check + ruff format --check (src, tests)
+#   make format             - ruff check --fix + ruff format (src, tests)
+#   make typecheck          - mypy src/octop (strict via [tool.mypy] in pyproject.toml)
+#   make test               - pytest -n PYTEST_JOBS -m "not live"
+#   make test-fast          - pytest -n PYTEST_JOBS -m "not live and not slow"
+#   make test-live          - pytest -m live
+#
+# Quality (frontend):
+#   make lint-frontend      - npm run lint (ESLint) + npm run format:check (Prettier check)
+#   make format-frontend    - npm run format (Prettier write)
+#   make typecheck-frontend - npx tsc -b
+#   make test-frontend      - npx vitest run + scripts/vitest-fail-classify.py (exit 1/2/3 = failure)
+#
+# Quality (full stack):
+#   make lint-all           - lint + lint-frontend
+#   make format-all         - format + format-frontend (first leg of make all)
+#   make typecheck-all      - typecheck + typecheck-frontend
+#
+# Development:
+#   make dev                - dashboard dev server + octop run together
+#   make dev-frontend       - Vite dev server only
+#   make dev-backend        - octop run only
+#
+# Online-deps (.venv-online = local Octop source + harness-* from PyPI):
+#   make install-online     - Create .venv-online (octop editable + harness-* from PyPI)
+#   make test-online        - pytest -m "not live" against .venv-online
+#   make run-online         - octop run from .venv-online
+#
+# Utilities:
+#   make install-hooks      - Point git at .githooks (pre-commit runs make precommit + dashboard build)
+#   make install            - Install Python dev dependencies (uv sync / pip install -e ".[dev]")
+#   make install-dev        - Same rule as install
+#   make install-frontend   - Install dashboard npm dependencies (npm ci; required by the frontend legs)
+#   make install-tools      - Install build + twine for publishing
+#   make clean              - Remove build artifacts and caches
+#   make clean-online       - Remove the .venv-online environment
+#   make version            - Print the project version from pyproject.toml
 #
 # Prerequisites:
-#   - Node.js + npm   (frontend)
+#   - Node.js + npm   (frontend; run `make install-frontend` once per clone)
 #   - Python 3.12+    (backend)
 #   - uv              (recommended) or pip
 #   - twine           (publish: pip install twine / make install-tools)
@@ -16,6 +66,12 @@ SHELL := /bin/bash
 
 REPO_ROOT     := $(shell pwd)
 DASHBOARD_DIR := $(REPO_ROOT)/dashboard
+
+# ★ 显式串行（批次十四 `T-B-GATE` ⑧）：`all` 的依赖里既有后端 `test`（pytest 全量）
+# 也有前端 `test-frontend`（vitest）。make **默认**就是串行，但一旦有人 `make -j`，
+# 两者会**并发** ⇒ 前端 collect/tests 超时更紧，而 `AuthGuard` 的 flake 正是**负载敏感**的
+# （实测：并发负载下会红）⇒ 这里显式声明**不可并行**，行为与默认**等价**。
+.NOTPARALLEL:
 DASHBOARD_DEST := $(REPO_ROOT)/src/octop/dashboard
 DIST_DIR      := $(REPO_ROOT)/dist
 
@@ -59,27 +115,28 @@ help:
 	@echo "  run-online       Start octop run from .venv-online"
 	@echo ""
 	@echo "Quality targets (ship bar):"
-	@echo "  all              format-all + lint + typecheck + test (backend lint/typecheck/test)"
-	@echo "  precommit        fast change-aware gate for the git pre-commit hook (testmon-scoped tests)"
+	@echo "  all              format-all + lint + lint-frontend + typecheck + test + test-frontend (six legs · ship bar)"
+	@echo "  precommit        format-all + lint + lint-frontend + typecheck + test-affected + test-frontend (git pre-commit hook gate)"
 	@echo "  lint             Ruff check + format check (src, tests)"
 	@echo "  format           Ruff auto-fix + format (src, tests)"
 	@echo "  typecheck        mypy --strict src/octop"
-	@echo "  test             pytest -m \"not live\""
+	@echo "  test             pytest -n PYTEST_JOBS -m \"not live\""
 	@echo "  test-live        pytest -m live"
 	@echo ""
 	@echo "Quality targets (frontend):"
 	@echo "  lint-frontend    ESLint + Prettier check"
-	@echo "  format-frontend  Prettier write"
+	@echo "  format-frontend  Prettier --write (dashboard only)"
 	@echo "  typecheck-frontend  tsc -b (project references)"
 	@echo ""
 	@echo "Quality targets (full stack):"
 	@echo "  lint-all         lint + lint-frontend"
 	@echo "  format-all       format + format-frontend (also first step of make all)"
 	@echo "  typecheck-all    typecheck + typecheck-frontend"
-	@echo "  check-all        lint-all + typecheck-all + test"
+	@echo "  check-all        lint-all + typecheck-all + test + test-frontend"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  install-hooks    Point git to .githooks (pre-commit: make precommit + dashboard build)"
+	@echo "  install-frontend Install dashboard npm dependencies (npm ci; required by prettier/eslint/vitest)"
 	@echo "  install          Install Python dev dependencies (alias: install-dev)"
 	@echo "  install-dev      uv sync / pip install -e \".[dev]\""
 	@echo "  install-tools    Install build + twine for publishing"
@@ -224,9 +281,17 @@ test:
 	$(RUN) pytest -n $(PYTEST_JOBS) -m "not live"
 
 .PHONY: test-frontend
+# ★ 前端测试段（批次十四 `T-B-GATE` · `P1 = B`）：把 vitest 接进 `make all`。
+# ★ 与既有 `build-frontend`（构建）**是两件事**，两条都保留。
+# ★ 退出码语义由 `dashboard/scripts/vitest-fail-classify.py`（`D-8`）给出：★★ **四级**
+#   有套件加载失败（`FAIL … [ … ]`）⇒ **1** · 仅用例失败（`FAIL … > …`）⇒ **2** · 全绿 ⇒ **0**
+#   · ★ `counts` 报有失败而分类为空 ⇒ **1**（守卫 · `AC-9`）· ★★ 无输入 / 无法解析（`P2'` 不成立）⇒ **3**。
+# ★ `2` 与 `3` 也是失败 ⇒ **不得** `|| true`。
+# ★ `P1-19`：第三段解释器**不得**写裸 `python3` —— 本仓 CI 只声明 `setup-uv`（⇒ `uv run python`），
+#   `python3` 是 Windows 镜像的**镜像内别名**、不是本仓工具链的保证 ⇒ 统一用 `$(PYTHON)`。
 test-frontend:
-	@echo "[test-frontend] Vitest..."
-	cd $(DASHBOARD_DIR) && npm run test
+	@echo "[test-frontend] vitest + fail-classifier (1 = suite load, 2 = case fail, 3 = no input)..."
+	@set -o pipefail; cd $(DASHBOARD_DIR) && npx vitest run 2>&1 | tee /tmp/octop-vitest.log | $(PYTHON) scripts/vitest-fail-classify.py
 
 .PHONY: test-fast
 test-fast:
@@ -242,8 +307,11 @@ test-live:
 # and kept full for accuracy) plus only the tests affected by changed files via
 # pytest-testmon. The full suite still runs in CI (`make all`); this is local
 # feedback only, so a missed cross-module impact is caught there.
+# ★ `P1-9`：`test-frontend` 也在本目标里 —— 前端**没有**等价的 testmon 选择器，
+#   所以 dashboard 套件每次提交都**全量**跑一遍（本机实测 ≈ 27s，225 文件 / 1428 用例）。
+#   这是**有意的阻断**：前端红 ⇒ 钩子非 0 ⇒ 提交被挡（不是提示）。
 .PHONY: precommit
-precommit: format-all lint lint-frontend typecheck test-affected
+precommit: format-all lint lint-frontend typecheck test-affected test-frontend
 
 # NOTE: do NOT pass `-m` here — pytest-testmon deactivates its affected-test
 # selection whenever a marker expression is present, which would fall back to
@@ -256,9 +324,25 @@ precommit: format-all lint lint-frontend typecheck test-affected
 # silently run zero tests. The patch in conftest.py / tests/support/
 # testmon_staged_changes.py redirects detection to `git diff HEAD` (staged +
 # unstaged) so the gate actually fires on a commit's changes.
+#
+# ★ `P3-22`：**冷启动**（无 `.testmondata`，或该库里还没有任何 `test_execution`
+#   记录 ⇒ 典型于「新克隆 / 刚删掉库」）时，testmon 在 `pytest_configure` 里
+#   走 `first_build`：没有任何基线指纹 ⇒ **它必须跑满全量**才能建立基线
+#   （本机实测 ≈1007 s / 5845 用例）。`P1-9` 两次实测的症状正与此吻合 ——
+#   其证据明确记载首跑「钩子此前无 .testmondata」⇒ `5795 passed / 1007.19 s`。
+#
+#   本目标因此把两种状态**显式**打印出来，避免把「正在建基线的全量」误读成
+#   「变更范围没生效」（本卡要消除的正是这个歧义）。★ 不删库、不跳过检查、
+#   不削弱断言：冷启动的全量跑是 testmon 建立基线的**必要**一次；建好后每提交
+#   只跑受影响用例。★ 稳态下命令仍是 `pytest --testmon`，与改前**逐字一致**。
 .PHONY: test-affected
 test-affected:
 	@echo "[test] pytest (testmon: only tests affected by changes)..."
+	@$(PYTHON) -c "import os, sqlite3; \
+p = os.environ.get('TESTMON_DATAFILE', '.testmondata'); \
+n = 0; \
+exec('try:\n    n = sqlite3.connect(p).execute(\"select count(*) from test_execution\").fetchone()[0]\nexcept Exception:\n    n = 0') if os.path.exists(p) else None; \
+print('[test] ★ testmon 无基线（冷启动）⇒ 本次跑满后端全量以建立基线（≈16 min，仅此一次）') if n == 0 else print('[test] testmon 基线：%d 条用例记录 ⇒ 只跑受影响用例' % n)"
 	$(RUN) pytest --testmon
 
 # ─── Quality (frontend) ──────────────────────────────────────────────────────
@@ -296,12 +380,24 @@ check-all: lint-all typecheck-all test test-frontend
 
 # ─── Utilities ───────────────────────────────────────────────────────────────
 
+.PHONY: install-frontend
+# ★ `P3-18`：前端先决条件。干净检出上 `dashboard/node_modules` 不存在 ⇒
+#   `format-frontend` / `lint-frontend` / `test-frontend` 一跑就 `prettier: command not found`
+#   （exit 127），而 `make all` 的第一条腿正是 `format-all` ⇒ 照 §6 走的新人首跑必挂。
+# ★ 本目标就是那道缺的前置：`npm ci`（按 `package-lock.json` 可复现安装）。
+# ★ 与 `build-frontend` 内联的 `npm ci` **职责重叠但都不动** —— 本目标**不**接进
+#   `all:` / `precommit:`（改依赖图 = 改门禁语义，超出本卡；由 `make all` 的腿自己报缺）。
+install-frontend:
+	@echo "[install-frontend] Installing dashboard dependencies (npm ci)..."
+	cd $(DASHBOARD_DIR) && npm ci
+	@echo "[install-frontend] Done."
+
 .PHONY: install-hooks
 install-hooks:
 	@echo "[install-hooks] Setting core.hooksPath=.githooks"
 	git config core.hooksPath .githooks
 	@chmod +x "$(REPO_ROOT)/.githooks/"* 2>/dev/null || true
-	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + typecheck + testmon-scoped tests), dashboard build"
+	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + lint-frontend + typecheck + testmon-scoped tests + test-frontend), dashboard build"
 	@echo "[install-hooks] Bypass: SKIP_PRECOMMIT=1 git commit …   or   git commit --no-verify"
 
 .PHONY: install install-dev
@@ -340,3 +436,25 @@ clean-online:
 .PHONY: version
 version:
 	@$(PYTHON) -c "import pathlib, re; t = pathlib.Path('pyproject.toml').read_text(); m = re.search(r'^version\\s*=\\s*\"([^\"]+)\"', t, re.M); print(m.group(1) if m else 'unknown')"
+
+# ─── Audit（★ 独立目标 · 不并进 all · 只读）─────────────────────────────────
+
+.PHONY: audit
+audit:
+	@echo "[audit] 当前树纪律审计（只读 · 独立目标）..."
+	$(PYTHON) scripts/audit/current_tree.py
+
+# ─── Audit（判据面 · 只读 · ★ 独立目标 ⇒ ★ 绝不动 `all:` 那一行）──────────────────
+# ★ `AUD-C12`（`P1-17`）：`P1-7` 的 D-9 inScope 检查器迁入受管判据目录后的**独立入口**。
+#   ★ `make audit`（`scripts/audit/current_tree.py`）经 `registry.FROZEN_IDS` **已同时包含**本判据
+#     —— ★ 注册即接线：判据返回 `FAIL`/`UNKNOWN` ⇒ 入口退出码非 0 ⇒ `make audit` 失败。
+#   ★ 本目标用于**显式传参**地单独复核（承 `R8`：run 目录 / 改动来源都显式给；★ 输出里打印实际
+#     基准目录）。`AUDIT_RUN_DIR` 缺省 = `team/` 下最新的 run 目录（★ 可覆盖）。
+# ★ 解释器一律 `./.venv/bin/python`（★ 裸 `python3` = 3.9.6 ⇒ 假绿）。
+AUDIT_RUN_DIR ?= $(lastword $(sort $(wildcard team/2*/)))
+AUDIT_GIT_RANGE ?= HEAD~1..HEAD
+
+.PHONY: audit-inscope
+audit-inscope:
+	@echo "[audit-inscope] AUD-C12: inScope 残留 + 覆盖完整性预检（★ 阻断级 · 非 0 = 红）..."
+	./.venv/bin/python scripts/audit/criteria/inscope_residue.py --run-dir "$(AUDIT_RUN_DIR)" --git-range "$(AUDIT_GIT_RANGE)"

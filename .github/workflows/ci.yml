@@ -21,6 +21,23 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12"]
+    # `@requires_postgresql` tests (tests/support/postgresql.py) are gated on
+    # OCTOP_TEST_DATABASE_URL and are only exercised in the serial
+    # "Test (PostgreSQL)" step below, which points at this throwaway service.
+    # The plain `make test` step deliberately leaves the env var unset, so it
+    # keeps skipping them: tests/integration/test_postgresql_control_plane.py
+    # calls `DROP SCHEMA public CASCADE`, which races other xdist workers
+    # sharing one database (psycopg UniqueViolation / DATABASE_NOT_EMPTY).
+    # Credentials are container-local and never point at a real database.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: octop_test
+        ports:
+          - 15432:5432
     steps:
       - uses: actions/checkout@v4
 
@@ -61,6 +78,16 @@ jobs:
 
       - name: Test frontend
         run: make test-frontend
+
+      # Unlike `make test` (xdist, SQLite only), this step runs the PG-gated
+      # cases for real — previously they were skipped in every CI run. It is
+      # serial (`-n0`) because these tests share one database and
+      # `_reset_public_schema` drops `public`; running them in parallel raises
+      # psycopg UniqueViolation on concurrent DDL and DATABASE_NOT_EMPTY.
+      - name: Test (PostgreSQL)
+        env:
+          OCTOP_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:15432/octop_test
+        run: uv run pytest tests/integration/test_postgresql_control_plane.py tests/integration/test_postgresql_checkpoint_history.py -n0 -q
 
   test-windows:
     name: Windows / Python 3.12

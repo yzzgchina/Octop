@@ -415,3 +415,84 @@ describe("F3 project dialog — 提交后重读与新建回归", () => {
     expect(Object.keys(body)).not.toContain("kb_id");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `P1-16` · 判据面 **B 类 序号 17** —— 被复用的 Form **不得残留**上次开窗的值
+//
+// ## 为什么必须有这两条
+// antd / `rc-field-form` 的 `initialValues` **不能**重置被复用的 Form：它们被**合并到**
+// store **之下**，store 里已有的值优先（`index.tsx:196` 的注释逐字写着这件事）。
+// 而弹窗**复用**同一个 `form` 实例，`destroyOnHidden` 只销毁 DOM、不销毁 store
+// ⇒ 不播种就会「重开后仍是上次的值」。
+//
+// ## 落点（生产侧**已按纪律播种**，本卡补的是断言）
+// `index.tsx:204` `form.setFieldsValue(emptyValues())`（创建）·
+// `index.tsx:212` `form.setFieldsValue(valuesOf(project))`（编辑）。
+//
+// ## 判别性对照（原始输出见 `team/2026-10-08-110000/EVIDENCE-P1-16.md`）
+// ★ **不注入座位**：把 `index.tsx` 的**临时副本**里那两行播种去掉，用同一套断言跑 ⇒
+// **必须返红**（副本在 `tmp` 侧，真实文件零改动，探针跑完即删）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("P1-16 · 弹窗复用不得残留上次的值（rc-field-form 的 store 跨开窗存活）", () => {
+  async function renderPage() {
+    render(
+      <MemoryRouter initialEntries={["/projects"]}>
+        <ProjectsPage />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(screen.getByText("Website revamp")).toBeInTheDocument();
+    });
+  }
+
+  async function openCreate() {
+    fireEvent.click(screen.getByRole("button", { name: "projects.create" }));
+    return screen.findByTestId("create-project-dialog");
+  }
+
+  async function closeDialog() {
+    fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+    // 弹窗必须真的卸载，否则「重开」根本没发生（本判据就成了空转）。
+    await waitFor(() => {
+      expect(screen.queryByTestId("create-project-dialog")).toBeNull();
+    });
+  }
+
+  it("打开创建 → 填值 → 关闭 → 重开 ⇒ 空值", async () => {
+    await renderPage();
+
+    await openCreate();
+    fireEvent.change(screen.getByTestId("create-project-name"), {
+      target: { value: "Residue name" },
+    });
+    fireEvent.change(screen.getByTestId("create-project-goal"), {
+      target: { value: "Residue goal" },
+    });
+    await closeDialog();
+
+    await openCreate();
+    expect(await screen.findByTestId("create-project-name")).toHaveValue("");
+    expect(screen.getByTestId("create-project-goal")).toHaveValue("");
+    // 顺带钉住模式：重开的仍是**创建**（不是上次的编辑）。
+    expect(screen.getByTestId("create-project-breadcrumb")).toHaveTextContent(
+      "projects.create",
+    );
+  });
+
+  it("编辑 A → 关 → 创建 ⇒ 不得残留 A", async () => {
+    await renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "common.edit" }));
+    // 先证明编辑确实预填了 A（否则下面的「不残留」是空转）。
+    expect(await screen.findByTestId("create-project-name")).toHaveValue(
+      "Website revamp",
+    );
+    expect(screen.getByTestId("create-project-goal")).toHaveValue("Ship v2");
+    await closeDialog();
+
+    await openCreate();
+    expect(await screen.findByTestId("create-project-name")).toHaveValue("");
+    expect(screen.getByTestId("create-project-goal")).toHaveValue("");
+  });
+});

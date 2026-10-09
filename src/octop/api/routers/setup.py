@@ -10,7 +10,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, Field
 
-from octop.api.deps import get_server, require_database, resolve_user_from_token, sign_token
+from octop.api.deps import (
+    get_server,
+    require_admin,
+    require_database,
+    resolve_user_from_token,
+    sign_token,
+)
 from octop.infra.agents.providers.presets import load_provider_presets
 from octop.infra.agents.providers.probe import make_probe_provider_row, probe_provider_row
 from octop.infra.errors import ErrorCode, OctopError
@@ -234,8 +240,14 @@ async def validate_wizard_token(
 
 @router.get("/setup/status", summary="Setup wizard status")
 async def status(server: Any = Depends(get_server)) -> dict[str, Any]:
-    """Whether initial admin creation is still required and wizard password file state."""
-    wizard_path = str(Path.home() / _wizard.WIZARD_FILE_NAME)
+    """Whether initial admin creation is still required and wizard password file state.
+
+    This route is reachable without a JWT (``/api/setup/`` is JWT-exempt and the
+    SPA probes it before login), so the response must never carry a server-local
+    absolute path: echoing the resolved wizard file path leaks the server HOME
+    directory to any unauthenticated caller. The dashboard instead renders the
+    HOME-relative hint ``~/.octop/octop-login.txt``.
+    """
     password_required = _setup_password_required(server)
     um = server.user_manager
     setup_required = um is None or um.count() == 0
@@ -248,7 +260,6 @@ async def status(server: Any = Depends(get_server)) -> dict[str, Any]:
         "wizard_password_exists": (
             password_required and _wizard.read_password(Path.home()) is not None
         ),
-        "wizard_password_path": wizard_path if password_required else None,
         "database_driver": database_driver,
         "database_bound": server.database_bound,
     }
@@ -383,8 +394,15 @@ async def initial_admin(
 
 
 @router.post("/setup/resume-wizard", summary="Issue a fresh wizard token mid-setup")
-async def resume_wizard(server: Any = Depends(get_server)) -> dict[str, Any]:
-    """Issue a new wizard token after the admin exists but before finish."""
+async def resume_wizard(
+    server: Any = Depends(get_server),
+    _admin: Any = Depends(require_admin()),
+) -> dict[str, Any]:
+    """Issue a new wizard token after the admin exists but before finish.
+
+    Admin-only: at this phase the client already holds the admin JWT issued by
+    ``/setup/initial-admin``, so a wizard token must never be minted anonymously.
+    """
     _enforce_wizard_token_phase(server)
     require_database(server)
     assert server.user_manager is not None

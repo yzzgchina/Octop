@@ -10,8 +10,9 @@ Thank you for your interest in contributing! Octop is the control-plane applicat
 git clone https://github.com/TencentCloud/Octop.git octop
 cd octop
 make install          # backend dev dependencies
-make install-hooks    # once per clone: pre-commit runs make all + dashboard build
-make all              # format-all + backend lint + typecheck + test (ship bar)
+make install-hooks    # once per clone: pre-commit runs make precommit + dashboard build
+make install-frontend # once per clone: dashboard npm deps (npm ci) — required by `make all`'s frontend legs
+make all              # format-all + lint + lint-frontend + typecheck + test + test-frontend (ship bar)
 ```
 
 For frontend work (separate terminal):
@@ -28,8 +29,9 @@ make check-all        # full stack quality gate
 | Command | Description |
 |---------|-------------|
 | `make install` | Install Python dev dependencies |
-| `make install-hooks` | Point git at `.githooks` (pre-commit: `make all` + dashboard build) |
-| `make all` | `format-all` + backend lint + typecheck + test |
+| `make install-frontend` | Install dashboard npm dependencies (`npm ci`) — required before any frontend leg (`prettier` / `eslint` / `vitest` are not installed otherwise) |
+| `make install-hooks` | Point git at `.githooks` (pre-commit: `make precommit` + dashboard build) |
+| `make all` | `format-all` + `lint` + `lint-frontend` + `typecheck` + `test` + `test-frontend` |
 | `make check-all` | Full stack quality gate |
 | `make dev` | Start frontend + backend dev servers |
 | `make build` | Build dashboard + Python wheel |
@@ -60,7 +62,7 @@ hotfix/* ──PR──► main (+ tag) and ──PR──► develop
 1. Fork (if needed) and create a feature branch from **`develop`**
 2. Open the PR with base **`develop`** (not `main`, unless it is a release or hotfix)
 3. Add or update tests for behavior changes — CI runs on **Linux and Windows**; follow the cross-platform rules in [AGENTS.md](AGENTS.md) §7 (prefer `tmp_path` / `pathlib`, `fake_bin_path` for mocked binaries, `posix_only` for Unix-only cases)
-4. Ensure `make install-hooks` is enabled locally; run `make all` (backend) or `make check-all` (full stack) before submitting — pre-commit enforces the same gate
+4. Ensure `make install-hooks` is enabled locally; run `make all` (ship bar) or `make check-all` before submitting — pre-commit itself runs the faster change-aware `make precommit` gate (testmon-scoped tests + dashboard build), not the full `make all`
 5. Update `CHANGELOG.md` when user-facing behavior changes
 6. Open a PR with a clear description and test plan
 
@@ -93,8 +95,9 @@ Branch from `main` → PR into `main` (tag if shipping a patch) → PR into `dev
 git clone https://github.com/TencentCloud/Octop.git octop
 cd octop
 make install
-make install-hooks    # 每个 clone 执行一次：提交前跑 make all + 前端 build
-make all              # format-all + 后端 lint / typecheck / test
+make install-hooks    # 每个 clone 执行一次：提交前跑 make precommit + 前端 build
+make install-frontend # 每个 clone 执行一次：前端依赖（npm ci）—— 否则 `make all` 的前端腿必挂
+make all              # format-all + lint + lint-frontend + typecheck + test + test-frontend（ship bar）
 ```
 
 前端开发（另开终端）：
@@ -125,7 +128,7 @@ make check-all        # 全栈质量门禁
 1. 从 **`develop`** 创建特性分支
 2. PR 的 base 选 **`develop`**（release / hotfix 除外）
 3. 补充测试（CI 同时跑 **Linux / Windows**，路径与假二进制遵循 [AGENTS.md](AGENTS.md) §7）
-4. 本地执行过 `make install-hooks`；提交前 `make all` 或 `make check-all` 必须绿（hooks 会强制执行）
+4. 本地执行过 `make install-hooks`；提交前 `make all` 或 `make check-all` 必须绿（pre-commit 自身只跑更快的变更感知门 `make precommit`：testmon 增量测试 + 前端 build，不等于全量 `make all`）
 5. 用户可见变更时更新 `CHANGELOG.md`
 6. 提交 Pull Request
 

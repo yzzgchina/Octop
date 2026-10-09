@@ -14,17 +14,22 @@ Pinned wiring (gate-completeness verdicts ② and ③):
 
 * ``all``           — must wire both ``lint-frontend`` and ``test-frontend``, so
                       the ship bar cannot quietly drop a frontend leg.
-* ``test-frontend`` — must exist and actually call the dashboard suite
-                      (``cd <dashboard> && npm run test`` or an equivalent form).
-* ``precommit``     — must run ``lint-frontend`` but must **not** run
-                      ``test-frontend``: deliberate design, so the nail is
-                      two-sided (adding it fails, dropping it fails).
+* ``test-frontend`` — must exist, must call the dashboard suite
+                      (``cd <dashboard> && npm run test`` or an equivalent form),
+                      and must keep the ``P1-9`` **blocking** shape: ``set -o
+                      pipefail`` plus the ``vitest-fail-classify.py`` stage, so
+                      neither "vitest died" nor "nothing ran" can read as green.
+* ``precommit``     — must run ``lint-frontend`` **and** ``test-frontend``
+                      (``P1-9``: the local hook blocks on a red dashboard suite),
+                      while the backend leg stays change-scoped via testmon.
 * ``test``          — must stay backend-only (no frontend command leaks in).
 * ``check-all``     — must stay at parity with ``all`` and run ``test-frontend``.
 * ``ci.yml``        — every job that runs the backend gate must also reach the
                       frontend legs — on both the Linux and the Windows job
                       (GATE-VERIFY R2: CI used to run ``make lint``/``typecheck``/
-                      ``test`` only, i.e. the frontend was never gated at all).
+                      ``test`` only, i.e. the frontend was never gated at all) —
+                      and nothing may mask it (``|| true`` /
+                      ``continue-on-error: true``).
 """
 
 from __future__ import annotations
@@ -43,11 +48,25 @@ MAKEFILE = REPO_ROOT / "Makefile"
 # `npm run test`, but not `npm run test:watch` / `test:coverage` / `testmon`.
 _FRONTEND_TEST_CMD = r"npm\s+run\s+test(?![\w:-])"
 
+# The fail-classifier stage (`P1-9` / `D-8`): its exit code is what makes a
+# dashboard failure — including "vitest never produced output" — block the build.
+_FRONTEND_CLASSIFIER = "vitest-fail-classify.py"
+
 # Accepted shapes for "run the dashboard suite".
 _DASHBOARD_TEST_FORMS = (
     re.compile(rf"\bcd\s+[^\s&|;]*dashboard[^\s&|;]*\s*&&[^\n]*{_FRONTEND_TEST_CMD}", re.I),
     re.compile(r"npm\s+--prefix\s+[^\s&|;]*dashboard[^\s&|;]*\s+run\s+test(?![\w:-])", re.I),
+    # vitest piped through the classifier (the shape restored by `P0-5`).
+    re.compile(
+        rf"\bcd\s+[^\s&|;]*dashboard[^\s&|;]*\s*&&[^\n]*\bvitest\s+run\b[^\n]*"
+        rf"{re.escape(_FRONTEND_CLASSIFIER)}",
+        re.I,
+    ),
 )
+
+# Anything that turns a red gate into a green CI run: `|| true` swallows the
+# recipe's exit code, `continue-on-error: true` makes GitHub ignore the step.
+_MASKING = re.compile(r"\|\|\s*true\b|continue-on-error\s*:\s*true", re.I)
 
 # Any frontend toolchain call — used to prove `test` stays backend-only.
 _FRONTEND_TOOL = re.compile(r"\b(npm|pnpm|yarn|npx|vitest|eslint|prettier)\b", re.I)
@@ -142,14 +161,45 @@ def test_test_frontend_target_runs_dashboard_suite() -> None:
     )
 
 
-def test_precommit_runs_frontend_lint_but_not_frontend_test() -> None:
+def test_test_frontend_target_is_blocking() -> None:
+    """★ ``P1-9``: the dashboard gate must be able to fail, and must not be masked.
+
+    Three separate ways to fake a green frontend gate are pinned here:
+
+    * ``|| true`` / ``continue-on-error`` on the recipe — swallows the exit code.
+    * dropping ``set -o pipefail`` — a vitest crash *after* a valid ``Test Files
+      … passed`` summary would be hidden by the classifier pipe (proven by a
+      control run: pipeline exit ``0`` without pipefail, ``7`` with it).
+    * dropping the classifier — then "nothing ran" (empty input) reads as green.
+    """
+    recipe = _recipe("test-frontend")  # AssertionError if the target was deleted
+    joined = " ".join(recipe)
+    assert not _MASKING.search(joined), (
+        "`test-frontend` must propagate its failure (no `|| true` / "
+        f"`continue-on-error`); got {recipe!r}"
+    )
+    assert "set -o pipefail" in joined, (
+        "`test-frontend` must keep `set -o pipefail`, else a vitest crash is "
+        f"swallowed by the classifier pipe (false green); got {recipe!r}"
+    )
+    assert _FRONTEND_CLASSIFIER in joined, (
+        f"`test-frontend` must pipe vitest through {_FRONTEND_CLASSIFIER!r} so "
+        f"that 'nothing ran' is not green; got {recipe!r}"
+    )
+
+
+def test_precommit_runs_both_frontend_legs() -> None:
+    """★ ``P1-9``: the local hook blocks on a red dashboard suite, not just lint."""
     prerequisites = _prerequisites("precommit")
     assert "lint-frontend" in prerequisites, (
         f"`precommit` must run `lint-frontend`; got {prerequisites}"
     )
-    assert "test-frontend" not in prerequisites, (
-        "`precommit` must stay cheap: `test-frontend` belongs to `all`, "
-        f"not to the pre-commit hook; got {prerequisites}"
+    assert "test-frontend" in prerequisites, (
+        "`precommit` must run `test-frontend`: the hook has to block on a red "
+        f"dashboard suite, not only lint it; got {prerequisites}"
+    )
+    assert "test-affected" in prerequisites, (
+        f"`precommit` must keep the change-scoped backend tests; got {prerequisites}"
     )
 
 
@@ -233,13 +283,21 @@ CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*$")
 
 
-def _ci_jobs() -> dict[str, str]:
-    """Map ``ci.yml`` job id -> job body text (pure text, no YAML library)."""
+def _ci_text() -> str:
     assert CI_WORKFLOW.is_file(), f"CI workflow not found at {CI_WORKFLOW}"
+    return CI_WORKFLOW.read_text(encoding="utf-8")
+
+
+def _ci_jobs(text: str | None = None) -> dict[str, str]:
+    """Map ``ci.yml`` job id -> job body text (pure text, no YAML library).
+
+    ``text`` is injectable so regression tests can exercise mutated workflow
+    text without touching the repository file.
+    """
     jobs: dict[str, str] = {}
     current: str | None = None
     in_jobs = False
-    for line in CI_WORKFLOW.read_text(encoding="utf-8").splitlines():
+    for line in (text if text is not None else _ci_text()).splitlines():
         if not in_jobs:
             in_jobs = line.rstrip() == "jobs:"
             continue
@@ -284,3 +342,126 @@ def test_ci_reaches_the_frontend_in_every_gated_job() -> None:
         assert "test-frontend" in body, (
             f"CI job {job_id!r} runs the backend gate but never the frontend suite"
         )
+
+
+def test_ci_frontend_gate_cannot_be_masked() -> None:
+    """★ ``P1-9``: on CI the frontend gate must be able to fail the workflow.
+
+    ``|| true`` on the step would swallow the exit code and
+    ``continue-on-error: true`` would let GitHub report success anyway, so a
+    permanently red dashboard could merge. The whole workflow is checked: a
+    masking switch is never intentional for this gate.
+    """
+    hits = [match.group(0) for match in _MASKING.finditer(_ci_text())]
+    assert not hits, (
+        f"ci.yml masks failures with {hits!r} (`|| true` / "
+        "`continue-on-error: true`): the frontend gate must propagate as non-zero"
+    )
+
+
+# ─── Regression: the nails above must go RED on the mutations they guard ──────
+#
+# Each case rewrites a *copy* of the real file into ``tmp_path`` and points the
+# reader at that copy, so the perturbation never touches a tracked file but the
+# nail is exercised against real text. A nail that cannot fail is not a nail.
+
+
+def _mutate(tmp_path: Path, source: Path, old: str, new: str) -> str:
+    """``source`` text with ``old`` -> ``new``, materialized under ``tmp_path``."""
+    text = source.read_text(encoding="utf-8")
+    assert old in text, f"mutation anchor not found in {source}: {old!r}"
+    mutated = text.replace(old, new)
+    (tmp_path / f"mutated-{source.name}").write_text(mutated, encoding="utf-8")
+    return mutated
+
+
+# The classifier pipe stage is located by the classifier's **script name** only:
+# whatever spells the interpreter in front of it (`python3`, `$(PYTHON)`,
+# `./.venv/bin/python`, `uv run python`, …) is *matched* but stays out of the
+# anchor, so re-spelling it — exactly the `P1-19` change that broke these cases —
+# cannot break them again. The anchor still spans the whole `| …` stage, so
+# removing it leaves a valid pipeline rather than a dangling pipe.
+_CLASSIFIER_STAGE_RE = re.compile(rf"\|\s*(?:[^\s|;&]+\s+)*\S*{re.escape(_FRONTEND_CLASSIFIER)}")
+
+
+def _classifier_stage() -> str:
+    """Verbatim `| <interpreter> …vitest-fail-classify.py` stage of the Makefile."""
+    match = _CLASSIFIER_STAGE_RE.search(_makefile_text())
+    assert match is not None, (
+        f"classifier pipe stage not found: `test-frontend` must pipe vitest "
+        f"through {_FRONTEND_CLASSIFIER!r}"
+    )
+    return match.group(0)
+
+
+def test_classifier_removal_turns_the_nail_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """摘掉分类器 ⇒ 断言必须红（"没跑" 不能被读成全绿）。"""
+    mutated = _mutate(tmp_path, MAKEFILE, _classifier_stage(), "")
+    monkeypatch.setattr(sys.modules[__name__], "_makefile_text", lambda: mutated)
+    with pytest.raises(AssertionError, match="vitest-fail-classify"):
+        test_test_frontend_target_is_blocking()
+
+
+def test_pipefail_removal_turns_the_nail_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """摘掉 `set -o pipefail` ⇒ 断言必须红（vitest 崩了会被管道吞掉）。"""
+    mutated = _mutate(tmp_path, MAKEFILE, "@set -o pipefail; ", "@")
+    monkeypatch.setattr(sys.modules[__name__], "_makefile_text", lambda: mutated)
+    with pytest.raises(AssertionError, match="pipefail"):
+        test_test_frontend_target_is_blocking()
+
+
+def test_readding_or_true_turns_the_nail_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """给 `test-frontend` 加回 `|| true` ⇒ 断言必须红。"""
+    stage = _classifier_stage()
+    mutated = _mutate(tmp_path, MAKEFILE, stage, f"{stage} || true")
+    monkeypatch.setattr(sys.modules[__name__], "_makefile_text", lambda: mutated)
+    with pytest.raises(AssertionError, match="must propagate its failure"):
+        test_test_frontend_target_is_blocking()
+
+
+def test_dropping_the_precommit_frontend_leg_turns_the_nail_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """把前端腿从钩子里摘掉 ⇒ 断言必须红（两面的钉子）。"""
+    mutated = _mutate(
+        tmp_path,
+        MAKEFILE,
+        "precommit: format-all lint lint-frontend typecheck test-affected test-frontend",
+        "precommit: format-all lint lint-frontend typecheck test-affected",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_makefile_text", lambda: mutated)
+    with pytest.raises(AssertionError, match="must run `test-frontend`"):
+        test_precommit_runs_both_frontend_legs()
+
+
+def test_ci_or_true_turns_the_nail_red(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI 步骤加 `|| true` ⇒ 断言必须红。"""
+    mutated = _mutate(
+        tmp_path, CI_WORKFLOW, "run: make test-frontend", "run: make test-frontend || true"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_ci_text", lambda: mutated)
+    with pytest.raises(AssertionError, match="masks failures"):
+        test_ci_frontend_gate_cannot_be_masked()
+
+
+def test_ci_continue_on_error_turns_the_nail_red(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CI 步骤加 `continue-on-error: true` ⇒ 断言必须红。"""
+    mutated = _mutate(
+        tmp_path,
+        CI_WORKFLOW,
+        "      - name: Test frontend\n        run: make test-frontend\n",
+        "      - name: Test frontend\n"
+        "        continue-on-error: true\n"
+        "        run: make test-frontend\n",
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_ci_text", lambda: mutated)
+    with pytest.raises(AssertionError, match="masks failures"):
+        test_ci_frontend_gate_cannot_be_masked()

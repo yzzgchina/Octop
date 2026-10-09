@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from octop.i18n import error_message
+from octop.i18n import loader as i18n_loader
+from octop.i18n.loader import flatten_keys
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.locale import resolve_request_locale
 
@@ -139,15 +141,10 @@ def test_api_errors_namespaces_agree_in_both_locales():
         assert set(dash["apiErrors"]) == set(backend["errors"]) == {c.value for c in ErrorCode}
 
 
-def test_backend_locales_have_identical_key_trees():
-    repo = Path(__file__).resolve().parents[3]
-    en = json.loads((repo / "src/octop/i18n/en.json").read_text(encoding="utf-8"))
-    zh = json.loads((repo / "src/octop/i18n/zh.json").read_text(encoding="utf-8"))
-
-    def tree(value: object) -> object:
-        return {k: tree(v) for k, v in value.items()} if isinstance(value, dict) else True
-
-    assert tree(en) == tree(zh)
+# ★ 「后端 en/zh 键树全等」的**唯一**落点已搬到 `tests/unit/i18n/test_backend_keys.py`
+#   （`P1-16` · B 类序号 3）：那里走**公开 API** `octop.i18n.all_keys_for_locale`
+#   （= `loader.flatten_keys` 的同一实现），并带判别性对照。
+#   此处曾有一份**局部 `tree()` 展平**的等价拷贝（同一事实两份实现）—— 已删除，只留本注。
 
 
 def test_dashboard_chat_labels_are_paired_and_localized():
@@ -155,10 +152,10 @@ def test_dashboard_chat_labels_are_paired_and_localized():
     repo = Path(__file__).resolve().parents[3]
     en = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
     zh = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
-    assert set(en["chat"]) == set(zh["chat"])
-    # 213 = 211 + the two chat keys upstream v1.0.2b5 added (`remoteExpert`,
-    # `expertRemoteBadge`); en and zh both moved, so parity still holds.
-    assert len(zh["chat"]) == 213
+    # Namespace history (the old hand-maintained watermark): 213 = 211 + the two chat keys
+    # upstream v1.0.2b5 added (`remoteExpert`, `expertRemoteBadge`). P3-41 drops the literal:
+    # the bundle is read now, the floor only says which keys may never disappear.
+    _assert_chat_watermark(en, zh)
     assert zh["chat"]["sectionPinned"] == "置顶"
     assert zh["chat"]["sectionActive"] == "会话"
     assert zh["chat"]["sectionUnused"] == "未使用"
@@ -231,6 +228,222 @@ def test_dashboard_api_errors_carry_the_new_zh_text():
         assert dash_zh["apiErrors"][code] == expected, code
 
 
+# ── dashboard locale floors (P3-41) ──────────────────────────────────────────
+#
+# These guards used to pin sizes as literals (``len(zh["chat"]) == 213`` and
+# ``len(data) == 82``). Both self-declared that they drift: the ``chat`` count
+# carried a hand-written "211 -> 213, upstream added two keys" note, and the
+# top-level count said "whoever adds the next namespace bumps it again".
+#
+# P3-41 reads the real bundles at run time and keeps a frozen inventory as the
+# external baseline — the same shape as ``_PROJECTS_KEYS_FLOOR`` (P3-40):
+#
+# * ``_CHAT_KEYS_FLOOR`` is a **monotonic lower bound** (``floor <= bundle``):
+#   adding a chat key needs no edit here; dropping or renaming one — from either
+#   locale, or from both at once, which ``set(en) == set(zh)`` alone cannot see —
+#   fails and *names the key*. ``len(zh["chat"]) == 213`` only fired once a count
+#   moved, and could not say which key went missing.
+# * ``_TOP_LEVEL_FLOOR`` is the exact namespace inventory (``set(data) ==
+#   frozenset``): that guard exists to catch a duplicated top-level block from
+#   concurrent writers, so membership must be exact. It still names the offending
+#   namespace instead of reporting two numbers.
+#
+# Neither is a second watermark: no count is compared against the bundle, and
+# every failure message carries namespace/key names.
+#
+# Regenerate after a deliberate removal/rename:
+#   python -c "import json;print(' '.join(sorted(json.load(open('dashboard/src/locales/zh.json'))['chat'])))"
+#   python -c "import json;print(' '.join(sorted(json.load(open('dashboard/src/locales/zh.json')))))"
+#
+# fmt: off
+_CHAT_KEYS_FLOOR: frozenset[str] = frozenset(
+    """
+    agentFailed agentFailedHint agentNoDescription agentNotRunning agentNotRunningHint
+    agentProfile agentStarting agentStartingHint ask bootstrapKickoff citationDeepLinkFailed
+    citationPreview citationPreviewFailed citationScrollTop citationViewInKnowledgeBase
+    citations collapseHistorySidebar collapseThinking collapseThinkingHint composerContextLabel
+    composerMore contextWindow continuing conversationMode createExpert createSessionFailed
+    deleteSessionConfirm dislike dockAddTab dockFileList dockFileListCount dockFileListEmpty
+    dockFileListHint dockFileMaybeDeleted dockPhoneTitle dockTerminalTitle dockToolUiMissing
+    dockToolUiTitle downloadFailed editFileCard errorOccurred expandHistorySidebar expandMore
+    expertHide expertListHidden expertListHiddenEmpty expertListShowVisible expertPicker
+    expertPickerEmpty expertPickerHidden expertPickerHiddenEmpty expertPickerHiddenSearch
+    expertPickerManage expertPickerSearch expertPickerShowVisible expertRemoteBadge
+    expertSharedBadge expertUnhide fileSwitch fileWorkspace fileWorkspaceHint fork
+    forkDisabledWhileBusy forkFailed forkFromHere forkNoAssistant forkSuccess forkSuccessEmpty
+    generating generatingWithElapsed goToAgentConfig goToExperts hideThinking historyLoadFailed
+    historyMigration historyRetry hitl imageLoadFailed knowledgePicker knowledgePickerEmpty
+    knowledgePickerSearch like loadEarlierMessages loadingEarlierMessages manageKnowledgeBases
+    mediaLoadFailed memberResponding membersResponding membersRespondingNamed memoryMaintenance
+    modelAuto modelAutoHint modelPickerManage modifiedFiles nameJoin newRepliesBelow
+    noAgentsHint noAgentsTitle noSearchResults noSessionsYet openBrowser openBrowserHint
+    openPhone openTerminal openToolUiInDock openTrajectory openWorkspace pickAgent pin polish
+    processOrganizing processRunningTool processRunningTools processSummary
+    processSummaryThinkingOnly processSummaryToolsOnly processThinkingLive projectSessionBadge
+    pushToast queue reasoningAlways reasoningAuto reasoningDisabled reasoningEffort
+    reasoningEnabled reasoningMode refreshingMessages regenerate remoteBrowserTitle remoteExpert
+    resizeSidebar retry scrollForEarlierMessages scrollToBottom searchSessions sectionActive
+    sectionPinned sectionUnused selectModel send sessionWorking sharedExpert showThinking
+    skillPicker skillPickerEmpty skillPickerSearch stop stopTeamHint streamResumed
+    subagentPicker subagentPickerEmpty subagentPickerManage subagentPickerSearch teamBadge
+    teamHostHover teamProfile teamWrapupBadge thinking toolUiDockedHint toolUiDockedOpen
+    trajectoryCollapsedToolCallMany trajectoryCollapsedToolCallOne trajectoryCollapsedTurn
+    trajectoryDetailError trajectoryDetailLoading trajectoryEmpty trajectoryExport
+    trajectoryExportFailed trajectoryInspectorCompleted trajectoryInspectorEmptyPayload
+    trajectoryInspectorError trajectoryInspectorGeneration trajectoryInspectorKind
+    trajectoryInspectorPayload trajectoryInspectorPlaceholder trajectoryInspectorPreview
+    trajectoryInspectorRaw trajectoryInspectorResult trajectoryInspectorSource
+    trajectoryInspectorStarted trajectoryInspectorStatus trajectoryInspectorSummary
+    trajectoryInspectorThroughput trajectoryInspectorTiming trajectoryInspectorTokens
+    trajectoryInspectorTotalDuration trajectoryInspectorTtft trajectoryLaneInput
+    trajectoryLaneModel trajectoryLaneTools trajectoryLoadEarlier trajectoryLoadError
+    trajectoryMetricCacheHit trajectoryMetricCacheRead trajectoryMetricInputTokens
+    trajectoryMetricLlmMs trajectoryMetricOutputTokens trajectoryMetricSteps
+    trajectoryMetricTokPerS trajectoryMetricToolMs trajectoryMetricTtft trajectoryMetricTurns
+    trajectoryMetrics trajectorySelectSession trajectoryTimeline trajectoryTitle
+    trajectoryToolCallOnly trajectoryToolbarCalls trajectoryToolbarDuration
+    trajectoryToolbarSearch trajectoryToolbarTurns turnTimeline unpin
+    """.split()  # noqa: SIM905 — a 213-element list literal would be 213 lines
+)
+
+_TOP_LEVEL_FLOOR: frozenset[str] = frozenset(
+    """
+    account acp admin adminAgents adminAudit adminProviders adminSso adminUsers advancedSettings
+    agentConfig agentSelector agent_errors apiErrors app auth backup browserViewer
+    browserWorkspace channels chat chatUsage chatWelcome common connectors consoleBubble cos
+    cronJobs desktopChrome embedding environments errors experts header heartbeat invite
+    knowledgeBases language layout login mbtiPage mediaGeneration memory mention modelConfig
+    models nav observability pageShell personalization plugins proactiveConfig projects
+    providers pwa remoteAndroid remoteBrowser remoteDesktop remoteDesktopHub scenes security
+    sessions setupWizard skillPackages skills slash storage stream_errors subagents teamRuns
+    terminal theme tls tokenUsage toolFeedback toolSettings tools upload user voice wizard
+    workbench workspace
+    """.split()  # noqa: SIM905 — an 82-element list literal would be 82 lines
+)
+# fmt: on
+
+
+def _assert_chat_watermark(en: dict, zh: dict) -> None:
+    """Dynamic ``chat.*`` waterline: read both bundles, compare to the floor.
+
+    ``set(en["chat"]) == set(zh["chat"])`` only catches a key one locale lost. The
+    floor is the external baseline that also catches a key *both* locales lost —
+    the failure the old hand-bumped count guarded against.
+    """
+    assert set(en["chat"]) == set(zh["chat"]), "dashboard chat.* must be paired"
+    for locale, table in (("zh", zh), ("en", en)):
+        lost = sorted(_CHAT_KEYS_FLOOR - set(table["chat"]))
+        assert not lost, f"{locale} chat.* lost key(s) — {lost}"
+
+
+def _assert_top_level_matches_floor(data: dict, locale: str) -> None:
+    """``data``'s top-level namespaces must be exactly ``_TOP_LEVEL_FLOOR``.
+
+    A duplicated block from a concurrent writer makes the live set a strict
+    superset; a removed/renamed namespace makes it a strict subset. Both report
+    the namespace names rather than "82 != 83".
+    """
+    live = set(data)
+    if live == _TOP_LEVEL_FLOOR:
+        return
+    missing = sorted(_TOP_LEVEL_FLOOR - live)
+    extra = sorted(live - _TOP_LEVEL_FLOOR)
+    raise AssertionError(
+        f"{locale} top-level namespaces drifted from the frozen floor — "
+        f"missing={missing} unexpected={extra}"
+    )
+
+
+def test_dashboard_locale_floors_are_intact():
+    """Self-check: the frozen floors carry the expected names, duplicate-free."""
+    assert len(_CHAT_KEYS_FLOOR) == 213, "the frozen chat floor is 213 keys"
+    assert len(_TOP_LEVEL_FLOOR) == 82, "the frozen top-level floor is 82 namespaces"
+
+
+# ── the ``projects.*`` namespace floor (P3-40) ───────────────────────────────
+#
+# The namespace tests below used to pin the size as a literal
+# (``len(zh["projects"]) == 276``). That watermark lived *outside* the bundle and
+# had to be bumped by hand on every locale addition, so it drifted: P2-6 found it
+# stale on HEAD 3bb5e1e5 (264 written, 271 read ⇒ six assertions red before that
+# card even started). P3-40 reads the size from the bundle instead, and freezes the
+# thing that really is a contract — the inventory of keys the namespace may never
+# lose. Deliberately monotonic: adding a locale key needs no edit here, while
+# dropping one — from either locale, or from both at once, which ``set(en) ==
+# set(zh)`` alone cannot see — fails and names the key.
+#
+# Not a second hard-coded watermark: the count is never written down, and a growing
+# namespace never touches this list.
+#
+# Regenerate after a deliberate removal:
+#   python -c "import json;print(' '.join(sorted(json.load(open('dashboard/src/locales/zh.json'))['projects'])))"
+_PROJECTS_KEYS_FLOOR: frozenset[str] = frozenset(
+    """
+    archive archiveConfirmDesc archiveConfirmTitle archiveFailed archived assetBind
+    assetDocCount assetEmpty assetOpen assetTitle attachFile attachmentBadType
+    attachmentDeleteConfirm attachmentDownload attachmentTooLarge attachmentUpload
+    attachmentUploaded attachmentsEmpty attachmentsTitle backToList boardActionAssigned
+    boardActionCreated boardActionDeleted boardActionDispatched boardActionStatusChanged
+    boardActionUpdated boardAdd boardAddBlocked boardAddPlaceholder boardCreateFailed
+    boardCreated boardDispatch boardDropInvalid boardMoveFailed boardReadOnly
+    boardSearchPlaceholder boardShowTerminal boardTimeline boardTimelineEmpty
+    boardTimelineLoadFailed boardTimelineTitle cfAdd cfDeleteConfirm cfEmpty cfInvalid cfKey
+    cfLabel cfOptions cfRequired cfType cfTypeDate cfTypeNumber cfTypeSelect cfTypeText
+    chipAgent chipAssignee chipCustomFields chipDueAt chipMore chipParentTask chipPriority
+    chipProject chipStartAt chipStatus chipSubtasks chipTags conclude concludedByUnknown
+    conclusionBadge conclusionBy configTitle connectorAdd connectorAvailable connectorNone
+    connectorTitle connectorUnavailable connectorUsing create createAndContinue createFailed
+    createTaskBreadcrumb createTaskDescription createTaskSubmit createTaskTitle created
+    createdAt cronCreate cronDeleteConfirm cronDisable cronEnable cronNone cronOwnedByOther
+    cronPromptHidden cronTitle customFieldsTitle detailSubtitle dueAt dynamicComingSoon
+    dynamicPlaceholder editTaskSaved editTaskSubmit editTaskTitle empty emptyDesc expertAdd
+    expertNone expertTitle feedComposerPlaceholder feedEmpty feedEmptyFiltered
+    feedEmptyRelevance feedFilterAll feedFilterByAuthor feedFilterClear feedMentions feedPost
+    feedRelevanceMine goal goalPlaceholder instructionEmpty instructionPlaceholder
+    instructionSaved instructionTitle instructionTooLong kbId kbUnbind loadFailed memberAdd
+    memberId memberIdRequired memberRemoveConfirm memberRemoveFailed memberRemoved memberRole
+    memberRoleAdmin memberRoleMember memberRoleOwner memberRoleUpdated memberRoleViewer
+    memberSaveFailed memberSaved memberSince memberSubject memberTitle members membersEmpty
+    membersHint memoryDenied memoryDeniedHint memoryEmpty memoryEmptyHint memoryError
+    memoryNoAgent memoryNoAgentHint name namePlaceholder nameRequired noAgentMembers noGoal
+    noMembers noTags noTasks noUserMembers overview owner pickAssignee pickParentTask pickTag
+    pickerEmptyTeams pickerGroupExperts pickerGroupTeams projectId quickInputFailed
+    quickInputNoAgent quickInputPlaceholder quickInputRecipientEmpty quickInputRecipientFilter
+    quickInputRecipientListLabel quickInputRecipientTrigger quickInputRefRemoved
+    quickInputRefTask quickInputSend quickInputSending quickInputSent quickInputTarget roleAdmin
+    roleMember roleOwner roleViewer skillAdd skillNone skillStale skillTitle skillUnavailable
+    startAt status statusActive statusArchived statusCancelled statusCompleted statusDraft
+    statusPaused subjectAgent subjectIdHintAgent subjectIdHintTeam subjectIdHintUser subjectTeam
+    subjectUser subtitle switchToAgent tabAssets tabDynamic tabMemory tabPlan tabTasks tagColor
+    tagColorInvalid tagCreate tagDeleteConfirm tagInvalid tagName tagNameInvalid tagsEmpty
+    tagsTitle taskDetailAddAgent taskDetailAttachments taskDetailBack taskDetailDeps
+    taskDetailDescription taskDetailDiscuss taskDetailExecutor taskDetailIssue
+    taskDetailNotFound taskDetailParent taskDetailSave taskDetailTimeDaysAgo taskDetailTimeToday
+    taskDetailTimeYesterday taskDetailTimeline taskDetailTimelineCreated
+    taskDetailTimelineDispatched taskDetailTimelineEmpty taskDetailTimelineUpdated
+    taskDetailTitle taskListColumnAssignee taskListColumnDueAt taskListColumnPriority
+    taskListColumnStartAt taskListColumnStatus taskListColumnTags taskListColumnTitle
+    taskListColumnUpdatedAt taskListEmpty taskListFilterKeyword taskListFilterStatus
+    taskListTitle taskPriority taskStatus taskStatusBlocked taskStatusCancelled taskStatusDoing
+    taskStatusDone taskStatusPlanning taskStatusReview taskStatusTodo taskTitle tasks tasksEmpty
+    tasksHint title unavailable unconclude update updateFailed updated updatedAt
+    """.split()  # noqa: SIM905 — a 276-element list literal would be 276 lines
+)
+
+
+def _assert_projects_watermark(en: dict, zh: dict) -> None:
+    """Dynamic ``projects.*`` waterline: read both bundles, compare to the floor.
+
+    ``set(en) == set(zh)`` only catches a key one locale lost. The floor is the
+    external baseline that also catches a key *both* locales lost — the failure the
+    old hand-bumped count guarded against.
+    """
+    assert set(en["projects"]) == set(zh["projects"]), "dashboard projects.* must be paired"
+    for locale, table in (("zh", zh), ("en", en)):
+        lost = sorted(_PROJECTS_KEYS_FLOOR - set(table["projects"]))
+        assert not lost, f"{locale} projects.* lost key(s) — {lost}"
+
+
 def test_dashboard_projects_namespace_is_paired_and_localized():
     """The new ``projects.*`` keys — namespace-level parity, frozen zh wording.
 
@@ -241,9 +454,13 @@ def test_dashboard_projects_namespace_is_paired_and_localized():
     en = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
     zh = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
     assert set(en["projects"]) == set(zh["projects"])
-    # 208+4+22+4+1 = 239, + 6 batch 8 (PLAN §5) = 245, + 2 batch 19 = 247, + 7 batch 12 = 254,
-    # + 8 batch 20 (T-86 项目记忆 Tab：tabMemory + memoryEmpty/Hint/Denied/Hint/Error/NoAgent/Hint) = 262.
-    assert len(zh["projects"]) == 262
+    # Namespace history (the old hand-maintained watermark): 208+4+22+4+1 = 239, + 6 batch 8
+    # (PLAN §5) = 245, + 2 batch 19 = 247, + 7 batch 12 = 254, + 1 A6 ``projects.tagNameInvalid``
+    # (PLAN §A6.2) = 255, + 1 A-TAGS-FIX ``projects.tagColorInvalid`` = 256, + 8 batch 20
+    # (T-86 项目记忆 Tab) = 264 — already stale there (the bundle read 271), + 5 C4-CREATE
+    # (P2-6 TaskCreateModal) = 276. P2-6 only re-froze that literal, which drifts again on the
+    # next locale key; P3-40 drops it (see ``_PROJECTS_KEYS_FLOOR`` above).
+    _assert_projects_watermark(en, zh)
     # R6 copy change: values only, keys untouched.
     assert zh["projects"]["taskStatusReview"] == "审核中"
     assert zh["projects"]["taskStatusBlocked"] == "已阻塞"
@@ -342,7 +559,7 @@ def test_dashboard_projects_new_keys_are_present_in_both_locales():
 # is therefore pinned to its verbatim zh string from PLAN.md §11.1.
 _BATCH2_PROJECTS_ZH: dict[str, str] = {
     "tabDynamic": "动态",
-    "tabPlan": "计划",
+    "tabPlan": "看板",
     "tabTasks": "任务",
     "tabAssets": "知识库",
     "dynamicPlaceholder": "动态流即将上线",
@@ -418,8 +635,7 @@ def test_batch2_projects_keys_exist_in_both_locales():
         assert key in zh["projects"], f"zh projects.{key} missing"
         assert key in en["projects"], f"en projects.{key} missing"
         assert en["projects"][key] != "", f"en projects.{key} is empty"
-    assert len(zh["projects"]) == 262
-    assert len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
 
 
 # ── batch 3 (T-I18N3): edit-dialog labels + two rejection codes ──────────────
@@ -508,12 +724,15 @@ def test_no_duplicate_keys_inside_any_dashboard_object():
         assert _duplicate_keys_in_one_object(path) == [], locale
         data = json.loads(path.read_text(encoding="utf-8"))
         # 82 = 81 + the `teamRuns` namespace added by T-20 (RunDetail page). This guard
-        # exists to catch a duplicated *top-level block* from concurrent writers; an
-        # intentional new namespace moves the number on purpose. Whoever adds the next
-        # namespace bumps it again (and says so).
-        # `chat` 211 -> 213: upstream v1.0.2b5 added `remoteExpert` / `expertRemoteBadge`
-        # (both locales) without touching this fork-only guard.
-        assert len(data) == 82 and len(data["chat"]) == 213, locale
+        # exists to catch a duplicated *top-level block* from concurrent writers — which is
+        # exactly why the frozen inventory, not a count, is what it compares. `chat`
+        # 211 -> 213: upstream v1.0.2b5 added `remoteExpert` / `expertRemoteBadge`.
+        _assert_top_level_matches_floor(data, locale)
+    # The `chat` waterline was pinned here as `len(data["chat"]) == 213` too; it is the
+    # same namespace waterline as the S0/T2.6 case above, so it shares that floor.
+    en_all = json.loads((repo / "dashboard/src/locales/en.json").read_text(encoding="utf-8"))
+    zh_all = json.loads((repo / "dashboard/src/locales/zh.json").read_text(encoding="utf-8"))
+    _assert_chat_watermark(en_all, zh_all)
 
 
 def test_the_projects_block_is_written_once():
@@ -575,7 +794,7 @@ def test_batch4_project_keys_are_localized_per_key():
         # L10: the PLAN table's bold / footnote markers are never part of a value.
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # The interpolation placeholder must survive transcription verbatim.
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert en["projects"]["quickInputTarget"] == "To {{name}}"
@@ -638,7 +857,7 @@ def test_qi_recipient_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # The reused strings must keep their existing wording (no silent redefinition).
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert zh["projects"]["quickInputNoAgent"] == "请先在项目配置中绑定专家。"
@@ -661,7 +880,7 @@ def test_batch6_picker_empty_teams_is_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # The reused keys must keep their wording: this batch adds exactly one key.
     assert set(_T_P6_I18N_PROJECT_KEYS) <= set(zh["projects"])
     for reused, expected in (
@@ -699,7 +918,7 @@ def test_batch8_feed_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 262 and len(en["projects"]) == 262
+    _assert_projects_watermark(en, zh)
     # Keys the feed keeps rendering must survive (reused, never redefined).
     for reused in ("tabDynamic", "dynamicPlaceholder", "taskDetailTimeline"):
         assert reused in zh["projects"], reused
@@ -911,3 +1130,126 @@ def test_team_code_status_mapping_matches_plan():
         assert _DEFAULT_STATUS[member] == expected, f"{code} 默认状态应为 {expected}"
         # 构造期路径同样成立（__post_init__ 读 _DEFAULT_STATUS；漏登记会 KeyError）。
         assert OctopError(member, "x").status == expected, code
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# `P1-16` · 判据面 **B 类 序号 4** —— `ErrorCode` **枚举驱动**的 **zh 显式**判据
+#                                + `loader.py` **回退分支可达性**
+#
+# ★ 为什么必须逐码钉 zh：`loader.lookup` 在 zh 缺键时**静默**回退英文
+#   （`loader.py:39-40`：`if loc != _FALLBACK_LOCALE: return _resolve_node(en_table, key)`）
+#   ⇒ 「zh 用户读到英文」**不会**让任何现存测试变红：
+#     · 本文件 `test_every_error_code_has_i18n_entry` 只判真值 —— **回退值也是真值**；
+#     · `test_error_message_zh` 只钉了 `AGENT_NAME_TAKEN` **一个**码。
+#   本节的判据把覆盖面从「1 个码」提到「**全部** `ErrorCode`」，且**逐码指出**回退。
+# ★ 点名（★ 与 `CRITERIA-29-CLASSIFICATION.md` §1 序号 4 的返红条件逐字一致）：
+#   `ErrorCode.value` 的 zh 取值**逐字等于 en**（= 回退发生）⇒ 红；zh 缺键 ⇒ 红。
+# ★ 展平**复用** `octop.i18n.loader.flatten_keys`（`all_keys_for_locale` 的同一实现），
+#   本节**零**重复展平实现。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _zh_explicit_defects(
+    tables: dict[str, dict],
+) -> tuple[list[str], dict[str, str]]:
+    """逐 `ErrorCode` 检查 zh 是否**显式**提供。
+
+    返回 `(已逐码检查的码清单, 缺陷映射)`：缺陷 = 「zh 缺键」或「zh 文本逐字等于 en」。
+    ★ 第一个返回值是**覆盖证据**（证明扫的是全部枚举成员，不是一条空跑）。
+    """
+    zh_keys = flatten_keys(tables["zh"])
+    en_keys = flatten_keys(tables["en"])
+    checked: list[str] = []
+    defects: dict[str, str] = {}
+
+    for code in ErrorCode:
+        key = f"errors.{code.value}"
+        checked.append(code.value)
+        if key not in zh_keys:
+            defects[code.value] = f"zh 缺键（{key}）⇒ lookup 静默回退英文"
+            continue
+        if key not in en_keys:
+            defects[code.value] = f"en 缺键（{key}）⇒ 回退源头本身缺失"
+            continue
+        zh_text = tables["zh"]["errors"][code.value]
+        en_text = tables["en"]["errors"][code.value]
+        if not zh_text:
+            defects[code.value] = "zh 取值为空字符串"
+        elif zh_text == en_text:
+            defects[code.value] = f"zh 文本逐字等于 en（{zh_text!r}）⇒ 回退实际发生"
+
+    return checked, defects
+
+
+def _zh_defect_message(checked: list[str], defects: dict[str, str]) -> str:
+    lines = [
+        f"{len(defects)}/{len(checked)} 个 `ErrorCode` 的 zh **不是显式**提供的：",
+        "",
+    ]
+    for code in sorted(defects):
+        lines.append(f"  {code}: {defects[code]}")
+    lines += [
+        "",
+        "实际：这些码在 zh 界面会**静默**显示英文（`loader.lookup` 的 fallback 分支）。",
+        "期望：同一键必须落在 `src/octop/i18n/zh.json` 的 `errors.*` 且文本为中文。",
+        "★ 不得靠给 `test_error_message_zh` 加一个码来「覆盖」—— 判据是**枚举驱动**的。",
+    ]
+    return "\n".join(lines)
+
+
+def test_every_error_code_has_an_explicit_zh_value():
+    """枚举驱动：**每个** `ErrorCode` 的 zh 都必须是显式值（不缺键、不逐字等于 en）。"""
+    checked, defects = _zh_explicit_defects(i18n_loader._load_all())
+
+    assert len(checked) > 100, f"只检查了 {len(checked)} 个码 —— 覆盖不足，不计证据"
+    assert len(checked) == len(list(ErrorCode)), "枚举遍历漏了成员"
+    assert not defects, _zh_defect_message(checked, defects)
+
+
+def test_zh_missing_key_falls_back_to_english_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """★ 序号 4 的**可达性**判据：证明「zh 缺键 ⇒ **静默**回退英文」**真的会发生**。
+
+    做法（**只吃 `tmp_path` 临时副本**，真实 bundle 只读）：从 zh 的副本删掉一个 `errors.*`
+    键，把副本喂给**真的** `loader`（monkeypatch `_load_all`），然后：
+
+    ① 行为面 —— `error_message(code, "zh")` 返回**英文原文**（不抛错、不返回裸 key）：
+       这就是「静默」的字面证据；
+    ② 判据面 —— 上一条用例的判据**必须**抓到它（缺键 ⇒ 缺陷）；
+    ③ 反向 —— 真实表里该码**不**在缺陷集里（证明 ② 不是空转）。
+
+    ★ 附带效力：若有人**删掉** `loader.py` 的回退分支，① 会变成 `KeyError` ⇒ 本用例同样返红。
+    """
+    key = "errors.AGENT_NAME_TAKEN"
+    code = "AGENT_NAME_TAKEN"
+
+    # ★ 用**模块属性**取表：`from ... import _load_all` 会绑定函数对象，
+    #   monkeypatch 改 `loader._load_all` 时**不会**生效（探针实测踩到过）。
+    real = i18n_loader._load_all()
+    assert code not in _zh_explicit_defects(real)[1], "真实表里该码本应是绿的"
+
+    tampered = {
+        "en": json.loads(json.dumps(real["en"])),
+        "zh": json.loads(json.dumps(real["zh"])),
+    }
+    en_text = tampered["en"]["errors"][code]
+    del tampered["zh"]["errors"][code]
+
+    reloaded: dict[str, dict] = {}
+    for locale, table in tampered.items():
+        path = tmp_path / f"{locale}.json"
+        path.write_text(json.dumps(table, ensure_ascii=False), encoding="utf-8")
+        reloaded[locale] = json.loads(path.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr("octop.i18n.loader._load_all", lambda: reloaded)
+
+    # ① 静默回退：拿到的是**英文原文**，且**没有**抛 KeyError。
+    assert error_message(code, "zh") == en_text
+    assert error_message(code, "zh") == error_message(code, "en")
+    assert key not in flatten_keys(reloaded["zh"])
+
+    # ② 判据必须抓到（并且报的是「缺键」这一条，不是别的）。
+    _, defects = _zh_explicit_defects(reloaded)
+    assert code in defects, f"缺键没被判据抓到：{defects}"
+    assert "zh 缺键" in defects[code]

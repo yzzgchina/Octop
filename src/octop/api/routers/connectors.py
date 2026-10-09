@@ -468,6 +468,23 @@ def _assert_can_manage_connector(inst: Any, user: Any) -> None:
         raise OctopError(ErrorCode.FORBIDDEN, "not your connector instance")
 
 
+def _assert_cli_config_key_owned(server: Any, user: Any, key: Any) -> None:
+    """Refuse binding a caller-supplied CLI config key to another user's instance.
+
+    ``cli_config_key`` names the host directory
+    ``~/.octop/connector-cli/<kind>/<key>/``, which is shared with the connector
+    instance it belongs to (``resolve_cli_config_key`` prefers ``cli_config_key``,
+    then ``instance_id``). A key that already names a CLI-kind row therefore
+    belongs to that row's owner, not to whoever passed the key in.
+    """
+    raw = str(key or "").strip()
+    if not raw:
+        return
+    row = server.services.repos.connector_repo.get(raw)
+    if row is not None and get_cli_install_spec(row.kind) is not None:
+        _assert_can_manage_connector(row, user)
+
+
 def _raise_name_taken(name: str) -> None:
     raise OctopError(
         ErrorCode.CONNECTOR_NAME_TAKEN,
@@ -563,6 +580,7 @@ async def put_custom_mcp(
     body: CustomMcpPutBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Replace the user's custom MCP servers document and reload agents."""
     svc = _connector_service(server)
@@ -597,6 +615,7 @@ async def patch_custom_mcp_server(
     body: CustomMcpServerPatchBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Update ``enabled`` and/or ``default_open`` for one custom MCP server."""
     svc = _connector_service(server)
@@ -623,6 +642,7 @@ async def test_custom_mcp(
     body: CustomMcpTestBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Probe connectivity for one custom MCP server (saved name or inline spec)."""
     svc = _connector_service(server)
@@ -694,6 +714,7 @@ async def create_instance(
     body: CreateInstanceBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Connect a third-party account as a new named instance."""
     if is_custom_mcp_kind(body.kind):
@@ -718,6 +739,7 @@ async def create_instance(
     if repo.name_exists(user.id, display_name) or _custom_name_exists(svc, user.id, display_name):
         _raise_name_taken(display_name)
     cred_input = dict(body.credentials)
+    _assert_cli_config_key_owned(server, user, cred_input.get("cli_config_key"))
 
     try:
         cred_payload = await _prepare_credentials(
@@ -764,6 +786,7 @@ async def patch_instance(
     body: PatchInstanceBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Edit a connector instance without replacing its identity."""
     custom_target = _resolve_custom_target(instance_id, user=user, server=server)
@@ -839,6 +862,7 @@ async def patch_instance(
     if body.shared is not None:
         repo.update_metadata(instance_id, shared=body.shared)
     if body.credentials is not None:
+        _assert_cli_config_key_owned(server, user, body.credentials.get("cli_config_key"))
         svc = _connector_service(server)
         merged = _merge_credentials(svc.decrypt(instance_id), body.credentials, kind=inst.kind)
         try:
@@ -890,6 +914,7 @@ async def delete_instance(
     instance_id: str,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> None:
     """Disconnect and delete stored credentials for a connector instance."""
     custom_target = _resolve_custom_target(instance_id, user=user, server=server)
@@ -949,6 +974,7 @@ async def test_instance(
     instance_id: str,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Probe the connector with stored credentials and return success or error details."""
     custom_target = _resolve_custom_target(instance_id, user=user, server=server)
@@ -993,6 +1019,7 @@ async def test_credentials(
     body: TestCredentialsBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Validate credentials before creating an instance (no persistence)."""
     del user
@@ -1075,9 +1102,10 @@ async def feishu_cli_user_auth_start(
     body: FeishuUserAuthStartBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Begin OAuth device-code login (no local HTTPS callback required)."""
-    del user
+    _assert_cli_config_key_owned(server, user, body.cli_config_key)
     svc = _connector_service(server)
     try:
         return await svc.start_feishu_user_auth(
@@ -1102,9 +1130,10 @@ async def feishu_cli_user_auth_complete(
     body: FeishuUserAuthCompleteBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Finish device-code login and switch default identity to user."""
-    del user
+    _assert_cli_config_key_owned(server, user, body.cli_config_key)
     svc = _connector_service(server)
     try:
         return await svc.complete_feishu_user_auth(
@@ -1134,6 +1163,7 @@ async def feishu_cli_user_auth_start_instance(
     instance_id: str,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Same as start, but App Secret is read from the stored instance."""
     svc = _connector_service(server)
@@ -1156,6 +1186,7 @@ async def feishu_cli_user_auth_complete_instance(
     body: FeishuUserAuthInstanceCompleteBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     svc = _connector_service(server)
     try:
@@ -1180,14 +1211,19 @@ async def refresh_instance(
     instance_id: str,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
-    """Refresh expiring OAuth tokens for a connector instance."""
+    """Refresh expiring OAuth tokens for a connector instance.
+
+    Ownership goes through :func:`_assert_can_manage_connector`, the same guard as the
+    other instance routes — so an admin may refresh **another user's** instance. This is a
+    deliberate, user-decided relaxation (P3-24), not an accident.
+    """
     repo = server.services.repos.connector_repo
     inst = repo.get(instance_id)
     if inst is None:
         raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
-    if inst.user_id != user.id:
-        raise OctopError(ErrorCode.FORBIDDEN, "not your connector instance")
+    _assert_can_manage_connector(inst, user)
     svc = _connector_service(server)
     creds = await svc.ensure_fresh_credentials(instance_id, inst.kind)
     return {"ok": True, "expires_at": creds.get("expires_at")}
@@ -1226,6 +1262,7 @@ async def auth_exchange_code(
     body: ExchangeAuthCodeBody,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Exchange a pasted authorization code for connector credentials (device/OOB flow)."""
     del user
@@ -1257,6 +1294,7 @@ async def oauth_start_unified(
     request: Request,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Begin browser OAuth for a catalog connector or custom MCP server."""
     if not body.target or not isinstance(body.target, dict):
@@ -1277,6 +1315,7 @@ async def oauth_start_legacy(
     request: Request,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Legacy catalog-only alias for :func:`oauth_start_unified`."""
     return await _begin_oauth_flow(
@@ -1415,6 +1454,7 @@ async def oauth_pending(
     state_id: str,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Poll after OAuth redirect until credentials are ready for instance creation."""
     key = f"connector.oauth.pending.{state_id}"

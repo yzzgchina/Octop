@@ -42,9 +42,11 @@ from octop.infra.db.repos.project_tasks import (
     TIMELINE_TASK_DISPATCHED,
     TIMELINE_TASK_STATUS_CHANGED,
     TIMELINE_TASK_UPDATED,
+    AssigneeMapping,
     ProjectTaskRow,
     TimelineEventRow,
     actor_ref,
+    normalize_assignees,
 )
 from octop.infra.db.repos.projects import (
     MEMBER_SUBJECT_USER,
@@ -139,6 +141,13 @@ _TASK_TRANSITIONS: dict[str, frozenset[str]] = {
 #: also rejects the common milliseconds mistake (~1.7e12) — PLAN.md §5.
 _TASK_DATE_MIN = 1
 _TASK_DATE_MAX = 4102444800
+
+#: The four request keywords that name a task's subjects: the two new arrays and the
+#: legacy single pair they replaced (PLAN §B2.5 (a)). PATCH's V7 exemption is
+#: expressed with this set — a patch that names *no* side skips the check entirely,
+#: so editing a title can never be refused because a member was removed later
+#: (PLAN §B2.5 (c) V7).
+_SUBJECT_FIELDS = frozenset({"owners", "executors", "assignee_type", "assignee_id"})
 
 
 class ProjectActor(Protocol):
@@ -712,6 +721,54 @@ class ProjectService:
 
     # ── tasks (T2.3) ─────────────────────────────────────────────────────────
 
+    def _validate_task_owners(self, project_id: str, mapping: AssigneeMapping) -> None:
+        """V5 — an owner that names a real **non-member** is a 400.
+
+        Runs on the **normalized** set, so the legacy ``assignee_type='user'`` /
+        ``assignee_id`` pair is checked exactly like the new ``owners`` array:
+        promoting the old shape must not become a way around the rule (PLAN §B2.5
+        (c), the second anti-bypass gate next to V3).
+
+        The predicate is ``project_members`` alone — deliberately **not** the global
+        user directory: the member table is what the assignable list is built from,
+        so the check and the picker share one source of truth.
+
+        Owners are matched on the **integer** ``user_id`` column rather than the
+        ``subject_id`` text: SQLite would coerce a text/int mismatch silently while
+        PostgreSQL raises.
+
+        An id with **no ``users`` row at all** is left to the repo's soft-FK check,
+        which owns that refusal (``PROJECT_TASK_ASSIGNEE_INVALID``, 422 — the F2
+        ruling of 2026-10-08). V5's row in the plan mentions "不存在或不是本项目成员",
+        but the existence half already has an owner and a *more accurate* code, so
+        this gate only decides membership; splitting them keeps one refusal per
+        cause instead of making V5 shadow an existing rule.
+
+        ★ ``executors`` is **not** checked, although PLAN §B2.5 (c) V6 asks for the
+        symmetric check. V6 as written refuses every team-run task: those rows carry
+        a *role* (``team:backend``, ``team:qa`` …) in ``assignee_id``, resolved to an
+        agent through ``team_run_members`` at dispatch time, and no role is a
+        ``project_members`` row — so the check would turn ``TeamRunService.create_task``
+        into a 400 and break 31 existing tests. That conflict is registered as a
+        pending contract decision rather than worked around here; the reasoning and
+        the ready-to-apply patch are in ``EVIDENCE-P2-10.md`` §5.
+        """
+        members = self._members.list_by_project(project_id)
+        member_user_ids = {
+            row.user_id for row in members if row.subject_type == MEMBER_SUBJECT_USER
+        }
+        non_members = [
+            uid
+            for uid in mapping.owners
+            if uid not in member_user_ids and self._services.user_repo.get(uid) is not None
+        ]
+        if not non_members:
+            return
+        raise _member_invalid(
+            "task owners must be members of this project: owners="
+            + ", ".join(str(uid) for uid in non_members)
+        )
+
     def list_tasks(
         self, project_id: str, *, user: ProjectActor, status: str | None = None
     ) -> list[ProjectTaskRow]:
@@ -748,6 +805,17 @@ class ProjectService:
         leaves a half-built task behind. Files are never deleted by compensation.
         """
         self.assert_project_role(project_id, user=user, required=PROJECT_WRITE)
+        # V5 before the first write, so a non-member owner is a 400 that leaves no
+        # task row and no compensation path to exercise. A create names both sides,
+        # so there is no "unchanged" side to exempt (V7 is about PATCH).
+        subjects = normalize_assignees(
+            owners=fields.get("owners", UNSET),
+            executors=fields.get("executors", UNSET),
+            assignee_type=fields.get("assignee_type", UNSET),
+            assignee_id=fields.get("assignee_id", UNSET),
+        )
+        if subjects is not None:
+            self._validate_task_owners(project_id, subjects)
         title = title.strip()
         if not title:
             raise ValueError("task title is required")
@@ -908,6 +976,21 @@ class ProjectService:
             self._assert_task_graph(
                 project_id, task_id=task_id, deps=[str(dep) for dep in fields["deps"]]
             )
+        # V5 on the **final** set, so a legacy-pair patch is checked like an array
+        # one. The unchanged side rides along in the normalized set; it is re-checked
+        # rather than exempted, because V5 and V6 must share one scope (see
+        # ``_validate_task_owners``).
+        if _SUBJECT_FIELDS & fields.keys():
+            subjects = normalize_assignees(
+                owners=fields.get("owners", UNSET),
+                executors=fields.get("executors", UNSET),
+                assignee_type=fields.get("assignee_type", UNSET),
+                assignee_id=fields.get("assignee_id", UNSET),
+                current_owners=task.owners,
+                current_executors=task.executors,
+            )
+            if subjects is not None:
+                self._validate_task_owners(project_id, subjects)
         updated = self._tasks.update(task_id, **fields)
         if updated is None:
             raise OctopError(ErrorCode.PROJECT_TASK_NOT_FOUND, "Task not found.")

@@ -12,7 +12,7 @@
   margin-bottom: 16px;
   border: 1px solid var(--fn-border-primary);
   border-radius: var(--fn-radius-lg, 12px);
-  background: var(--fn-bg-primary);
+  background: var(--fn-bg-layout);
 
   &:last-child {
     margin-bottom: 0;
@@ -82,9 +82,38 @@
    不得用 CSS order 提前。 */
 .detailLayout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) var(--detail-col, 320px);
   gap: 16px;
   align-items: start;
+}
+
+/* 形态 C（PLAN §A5.4）：`?task=` 命中时详情接管第 2 轨 ⇒ 宽度由「打开态」的四档
+   断点给出。★ 四档宽度值**只**写在这里：`index.tsx` 仅置 `data-detail-open` 状态
+   属性，不得内联 `--detail-col` / `gridTemplateColumns` —— 内联声明优先级高于样式表，
+   且媒体查询不提升优先级 ⇒ 内联会让 1600/1280/1100 三档全部读出 850（= 未实现）。
+   <1100px 不设档：由下方既有 `@media (max-width: 1099px)` 自动堆叠为单列、详情占满宽。 */
+@media (min-width: 1920px) {
+  .detailLayout[data-detail-open="true"] {
+    --detail-col: 850px;
+  }
+}
+
+@media (min-width: 1600px) and (max-width: 1919px) {
+  .detailLayout[data-detail-open="true"] {
+    --detail-col: 750px;
+  }
+}
+
+@media (min-width: 1280px) and (max-width: 1599px) {
+  .detailLayout[data-detail-open="true"] {
+    --detail-col: 600px;
+  }
+}
+
+@media (min-width: 1100px) and (max-width: 1279px) {
+  .detailLayout[data-detail-open="true"] {
+    --detail-col: 420px;
+  }
 }
 
 .mainColumn {

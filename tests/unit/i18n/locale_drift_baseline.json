@@ -1,0 +1,180 @@
+{
+  "schema": 1,
+  "source": "dashboard/src/locales/{en,zh}.json",
+  "note": "G-1 已知漂移基线（冻结的既有漂移键，按命名空间分组）。守卫判「当天漂移 − 基线漂移 ≠ ∅」⇒ 新增才红。",
+  "en_only": {
+    "cronJobs": [
+      "cronJobs.deleteFailed"
+    ],
+    "embedding": [
+      "embedding.done"
+    ],
+    "experts": [
+      "experts.removeMapping"
+    ],
+    "memory": [
+      "memory.vs.done"
+    ],
+    "models": [
+      "models.deleteProviderFailedSimple"
+    ],
+    "observability": [
+      "observability.saveFailed"
+    ],
+    "remoteBrowser": [
+      "remoteBrowser.reload"
+    ],
+    "voice": [
+      "voice.browserOnly"
+    ],
+    "workspace": [
+      "workspace.saveFailed"
+    ]
+  },
+  "zh_only": {
+    "channels": [
+      "channels.dmPolicyDisabled"
+    ],
+    "cronJobs": [
+      "cronJobs.col.enabled"
+    ],
+    "experts": [
+      "experts.agentDisable"
+    ],
+    "memory": [
+      "memory.atomDetail",
+      "memory.candidates.confirmPromote",
+      "memory.candidates.confirmReject",
+      "memory.candidates.detail",
+      "memory.candidates.empty",
+      "memory.candidates.kindLabel",
+      "memory.candidates.promote",
+      "memory.candidates.promoteOk",
+      "memory.candidates.reject",
+      "memory.candidates.rejectHint",
+      "memory.candidates.rejectOk",
+      "memory.candidates.rejectReasonPlaceholder",
+      "memory.candidates.rejectTitle",
+      "memory.candidates.statusLabel",
+      "memory.entityType.concept",
+      "memory.entityType.event",
+      "memory.entityType.organization",
+      "memory.entityType.other",
+      "memory.entityType.person",
+      "memory.entityType.place",
+      "memory.entityType.project",
+      "memory.entityType.tool",
+      "memory.episodeDetail",
+      "memory.episodes.disclaimer",
+      "memory.importance.high",
+      "memory.importance.low",
+      "memory.importance.medium",
+      "memory.importance.title",
+      "memory.journal.action.create",
+      "memory.journal.action.deprecate",
+      "memory.journal.action.merge",
+      "memory.journal.action.promote",
+      "memory.journal.action.reject",
+      "memory.journal.action.update",
+      "memory.kind.conflict",
+      "memory.kind.decision",
+      "memory.kind.fact",
+      "memory.kind.preference",
+      "memory.kind.task",
+      "memory.library.hintAtoms",
+      "memory.library.hintTree",
+      "memory.library.viewAtoms",
+      "memory.library.viewTree",
+      "memory.list.importanceMin",
+      "memory.list.kind",
+      "memory.migrate.alreadyAdopted",
+      "memory.migrate.alreadyAdoptedAt",
+      "memory.migrate.buttonLabel",
+      "memory.migrate.chooseFile",
+      "memory.migrate.comparePkgLabel",
+      "memory.migrate.confirmDesc",
+      "memory.migrate.confirmImport",
+      "memory.migrate.conflictLabel",
+      "memory.migrate.conflictReplace",
+      "memory.migrate.conflictSkip",
+      "memory.migrate.doctorAllPassed",
+      "memory.migrate.doctorDesc",
+      "memory.migrate.doctorFailed",
+      "memory.migrate.doctorLabel",
+      "memory.migrate.doctorTitle",
+      "memory.migrate.dryRunResult",
+      "memory.migrate.exportBtn",
+      "memory.migrate.exportDesc",
+      "memory.migrate.exportLabel",
+      "memory.migrate.exportSuccess",
+      "memory.migrate.exportTitle",
+      "memory.migrate.hostRewriteKeep",
+      "memory.migrate.hostRewriteLabel",
+      "memory.migrate.hostRewriteTarget",
+      "memory.migrate.importBtn",
+      "memory.migrate.importDone",
+      "memory.migrate.importLabel",
+      "memory.migrate.importStats",
+      "memory.migrate.importSuccess",
+      "memory.migrate.importTitle",
+      "memory.migrate.previewBtn",
+      "memory.migrate.rowCountDiff",
+      "memory.migrate.runDoctor",
+      "memory.migrate.selectFile",
+      "memory.migrate.selectFileLabel",
+      "memory.migrate.targetHostLabel",
+      "memory.migrate.targetNs",
+      "memory.migrate.willApply",
+      "memory.overview.dirtyPages",
+      "memory.overview.dirtyPagesClean",
+      "memory.overview.dirtyPagesHint",
+      "memory.overview.entitiesShort",
+      "memory.overview.heroTitle",
+      "memory.overview.indexedEntities",
+      "memory.overview.indexedEntitiesHint",
+      "memory.overview.memories",
+      "memory.overview.pendingReview",
+      "memory.overview.pendingReviewClean",
+      "memory.overview.pendingReviewHint",
+      "memory.overview.processingStatus",
+      "memory.overview.profileEyebrow",
+      "memory.overview.profileSubtitle",
+      "memory.overview.statusEmpty",
+      "memory.overview.subtitleRawEventsUnit",
+      "memory.overview.weeklyNewAtoms",
+      "memory.overview.weeklyNewAtomsHint",
+      "memory.terminal.aboutMe",
+      "memory.terminal.aboutMeDesc",
+      "memory.terminal.atomCount",
+      "memory.terminal.currentFocus",
+      "memory.terminal.currentFocusDesc",
+      "memory.terminal.emptyAboutMe",
+      "memory.terminal.emptyEntities",
+      "memory.terminal.emptyFocus",
+      "memory.terminal.emptyToldMe",
+      "memory.terminal.entities",
+      "memory.terminal.entitiesDesc",
+      "memory.terminal.toldMe",
+      "memory.terminal.toldMeDesc"
+    ],
+    "scenes": [
+      "scenes.currentSceneTab",
+      "scenes.drawerApply",
+      "scenes.drawerConfigFiles",
+      "scenes.drawerSkillFiles",
+      "scenes.moreScenesComing",
+      "scenes.moreScenesSub",
+      "scenes.noSceneApplied",
+      "scenes.noSceneAppliedHint",
+      "scenes.sceneSelectTab",
+      "scenes.yourConfiguration"
+    ],
+    "wizard": [
+      "wizard.steps.finish"
+    ]
+  },
+  "counts": {
+    "en_only": 9,
+    "zh_only": 128
+  }
+}

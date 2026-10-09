@@ -573,7 +573,7 @@ uv run octop run --host 127.0.0.1 --port 8088 --log-level info
 
 | 脚本 | 用途 |
 |---|---|
-| `verify_migration_numbering.py` | ★ 13 项迁移号自检（重复号、水位、上游 wiring 是否还在）。**每次 rebase 后必跑** |
+| `verify_migration_numbering.py` | ★ 7 项迁移号自检（重复号、版本序列缺口、sqlite/PG 成对性、水位、测试断言；上限从 `migrations/` 动态读取，不硬编码）。**每次 rebase 后必跑** |
 | `verify_dispatch_e2e.py` | ★ 派单端到端（6 段）。**配好 provider 后第一件事就是跑它** |
 | `verify_pg_018.py` / `verify_pg_repos.py` / `verify_pg_timeline.py` | 对真实 PG 跑迁移 / repo / 时间线验证 |
 | `i18n-parity-check.mjs` / `i18n-delta-check.mjs` / `i18n-used-keys-check.mjs` | en/zh key 对齐、缺失 key、未使用 key 检查 |

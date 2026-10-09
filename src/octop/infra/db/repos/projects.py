@@ -25,6 +25,7 @@ from octop.infra.db.repos._base import (
     optional_updates,
     sql_in_placeholders,
 )
+from octop.infra.db.task_prefix import derive_task_prefix
 from octop.infra.utils.ulid import new_short_id
 
 PROJECT_ROLES: tuple[str, ...] = ("owner", "admin", "member", "viewer")
@@ -78,6 +79,10 @@ class ProjectRow:
     due_at: int | None
     created_at: int
     updated_at: int
+    #: Numbering prefix for this project's tasks (PLAN §B1.1). Derived from the
+    #: name (falling back to the id) when the project is created; changing it
+    #: only affects numbers of tasks created afterwards.
+    task_prefix: str
 
     @classmethod
     def from_row(cls, r: DbRow) -> ProjectRow:
@@ -98,6 +103,7 @@ class ProjectRow:
             due_at=(int(r["due_at"]) if r["due_at"] is not None else None),
             created_at=int(r["created_at"]),
             updated_at=int(r["updated_at"]),
+            task_prefix=str(r["task_prefix"] or ""),
         )
 
 
@@ -137,8 +143,8 @@ class ProjectRepo:
             conn.execute(
                 "INSERT INTO projects("
                 "project_id, name, goal, status, owner_user_id, memory_namespace, "
-                "inject_version, kb_id, start_at, due_at, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+                "task_prefix, inject_version, kb_id, start_at, due_at, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
                 (
                     project_id,
                     name,
@@ -146,6 +152,11 @@ class ProjectRepo:
                     status,
                     owner_user_id,
                     project_memory_namespace(project_id),
+                    # The prefix is derived here (one implementation, shared with
+                    # the v27 backfill) so a project is numberable the moment it
+                    # exists — an empty prefix would leave its first task
+                    # unnumbered until a backfill pass ran.
+                    derive_task_prefix(name, project_id),
                     kb_id,
                     start_at,
                     due_at,
@@ -237,6 +248,7 @@ class ProjectRepo:
         goal: object = UNSET,
         instruction: object = UNSET,
         status: object = UNSET,
+        task_prefix: object = UNSET,
         start_at: object = UNSET,
         due_at: object = UNSET,
     ) -> ProjectRow | None:
@@ -245,6 +257,8 @@ class ProjectRepo:
         Pass an explicit ``None`` for ``start_at`` / ``due_at`` to clear it.
         ``instruction`` is ``TEXT NOT NULL`` — pass a string (``""`` clears the
         text, which is the sanctioned S12 shape), never ``None``.
+        ``task_prefix`` is patchable but never renumbers existing tasks (PLAN
+        §B1.3): it only feeds the numbers allocated after the write.
         ``kb_id`` is not patchable here — use :meth:`set_kb_id` so the
         compensating-delete flow in the service stays the only writer.
         """
@@ -254,6 +268,7 @@ class ProjectRepo:
                 ("goal", goal),
                 ("instruction", instruction),
                 ("status", status),
+                ("task_prefix", task_prefix),
                 ("start_at", start_at),
                 ("due_at", due_at),
             ]

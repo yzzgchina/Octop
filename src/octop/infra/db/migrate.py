@@ -7,6 +7,7 @@ Each file is ``NNN_description.sql`` (SQLite) or ``NNN_description.pg.sql``
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -15,6 +16,8 @@ from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.utils.ulid import new_ulid
+
+logger = logging.getLogger(__name__)
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SQL_STMT_RE = re.compile(r";\s*\n")
@@ -1559,9 +1562,34 @@ def _ensure_thread_conversation_mode_schema(db: DatabasePool) -> None:
 
 
 def _ensure_bridge_connections_schema(db: DatabasePool) -> None:
-    """Fold notes + unique display_name + auto_reconnect into unreleased v19."""
+    """Fold notes + unique display_name + auto_reconnect into unreleased v19.
+
+    A database migrated by an older Octop baseline records watermark 19 without
+    ever creating ``bridge_connections`` -- the upstream realignment moved the
+    table into 019 -- and ``run_migrations`` skips every file at or below the
+    watermark. A missing table is therefore created here from the numbered pair
+    instead of returning early: the file's ``_schema_version`` bump is dropped
+    because this is a repair, not an applied migration. The column and
+    de-duplication steps below then run as before, on either path.
+    """
     if not _table_exists(db, "bridge_connections"):
-        return
+        name = (
+            "019_bridge_connections.pg.sql"
+            if db.dialect == "postgresql"
+            else "019_bridge_connections.sql"
+        )
+        text = (
+            (_MIGRATIONS_DIR / name)
+            .read_text(encoding="utf-8")
+            .replace("UPDATE _schema_version SET version = 19;", "")
+        )
+        if db.dialect == "postgresql":
+            with db.connect() as conn:
+                for statement in _split_pg_sql(text):
+                    conn.execute(statement)
+        else:
+            with db.connect() as conn:
+                conn.executescript(text)
     _ensure_column(db, "bridge_connections", "notes", "TEXT")
     _ensure_column(db, "bridge_connections", "icon_name", "TEXT")
     _ensure_column(db, "bridge_connections", "auto_reconnect", "INTEGER NOT NULL DEFAULT 1")
@@ -1636,6 +1664,277 @@ def _ensure_projects_schema(db: DatabasePool) -> None:
     # ``executescript`` runs the whole file in one call and keeps comments.
     with db.connect() as conn:
         conn.executescript(text)
+
+
+# The additive half of 026, in file order (PLAN §F4). The tables and the columns
+# are repaired independently, so a database that already has ``team_runs`` but
+# missed these columns is repaired too.
+_TEAM_RUN_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("project_tasks", "kind", "TEXT NOT NULL DEFAULT 'work'"),
+    ("project_tasks", "acceptance", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "in_scope", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "verify", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "changed_paths", "TEXT NOT NULL DEFAULT '[]'"),
+    ("project_tasks", "round", "INTEGER NOT NULL DEFAULT 1"),
+    ("project_tasks", "verdict", "TEXT"),
+    ("project_tasks", "attempt", "INTEGER NOT NULL DEFAULT 0"),
+    ("project_tasks", "attempt_id", "TEXT"),
+    ("project_tasks", "claimed_by", "TEXT"),
+    ("project_tasks", "claimed_at", "INTEGER"),
+    ("project_tasks", "started_at", "INTEGER"),
+    ("project_tasks", "phase", "TEXT"),
+    ("project_artifacts", "owner_role", "TEXT"),
+    ("project_artifacts", "phase", "TEXT"),
+    ("threads", "pending_decision", "TEXT"),
+)
+
+
+def _ensure_team_runs_schema(db: DatabasePool) -> None:
+    """Create the 026 team-run tables when the watermark skipped 026.
+
+    ``026_team_runs.sql`` is additive DDL reached through the generic SQL path,
+    so a database whose recorded watermark is already past 26 -- an older
+    baseline applied its own 027 file -- never runs it: ``team_runs`` /
+    ``team_run_phases`` / ``team_run_members`` / ``project_task_findings`` stay
+    missing. Both halves of the pair are repaired here:
+
+      * the tables (and their indexes, including the partial unique lead rule),
+        run from the numbered pair minus its ``_schema_version`` bump -- writing
+        that back would roll a v27 database down to 26;
+      * the sixteen additive columns, through ``_ensure_column``, so a database
+        that has the tables but missed the additive half is repaired as well.
+
+    At watermark <= 26 the versioned path still owes 026, and the numbered pair
+    must keep it: the file's SQLite ``ALTER TABLE ... ADD COLUMN`` statements
+    carry no ``IF NOT EXISTS``, so columns added here would make the pair fail
+    with a duplicate column. Only a watermark already past 26 proves the file
+    can never run again (F4) -- which is exactly the gap repaired here.
+
+    The pair creates ``team_runs`` before any ``ALTER``, so a missing
+    ``team_runs`` proves no 026 statement has run and the file's bare SQLite
+    ``ALTER``s cannot collide with a column that is already there. Call this
+    after ``_ensure_projects_schema``: ``team_runs.project_id`` references
+    ``projects(project_id)`` and the ``ALTER``s target ``project_tasks`` /
+    ``project_artifacts``.
+    """
+    if _current_version(db) <= 26:
+        return
+    if not _table_exists(db, "team_runs"):
+        name = "026_team_runs.pg.sql" if db.dialect == "postgresql" else "026_team_runs.sql"
+        text = (
+            (_MIGRATIONS_DIR / name)
+            .read_text(encoding="utf-8")
+            .replace("UPDATE _schema_version SET version = 26;", "")
+        )
+        if db.dialect == "postgresql":
+            with db.connect() as conn:
+                for statement in _split_pg_sql(text):
+                    conn.execute(statement)
+        else:
+            with db.connect() as conn:
+                conn.executescript(text)
+    for table, column, definition in _TEAM_RUN_ADDED_COLUMNS:
+        if _table_exists(db, table):
+            _ensure_column(db, table, column, definition)
+
+
+def _task_number(prefix: str, seq: int) -> str:
+    """``f"{prefix}-{seq:03d}"`` up to 999, four digits from 1000 (PLAN §B1.2)."""
+    return f"{prefix}-{seq:03d}" if seq <= 999 else f"{prefix}-{seq:04d}"
+
+
+def _exclude_unrepresentable_sql(dialect: str) -> str:
+    """The ``AND NOT (…)`` guard dropping assignees no child row can hold.
+
+    ★ One source of truth for the two dialect spellings: ``_backfill_project_task_numbering``
+    and the cross-dialect equivalence test both call *this* function, so the test
+    cannot become a second copy of the predicate -- the project's #1 rework source
+    is one fact living in several places.
+
+    ``dialect`` is ``DatabasePool.dialect``: ``"postgresql"`` or (else) SQLite.
+    """
+    if dialect == "postgresql":
+        return (
+            " AND NOT (t.assignee_type = 'user' AND CASE WHEN t.assignee_id ~ '^[0-9]+$'"
+            " THEN (CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users)) ELSE FALSE END)"
+        )
+    return (
+        " AND NOT (t.assignee_type = 'user' AND t.assignee_id <> ''"
+        " AND t.assignee_id NOT GLOB '*[^0-9]*'"
+        " AND CAST(t.assignee_id AS NUMERIC) NOT IN (SELECT id FROM users))"
+    )
+
+
+def _backfill_project_task_numbering(db: DatabasePool) -> dict[str, int]:
+    """Backfill the v27 task-numbering data, idempotently.
+
+    The ``027_project_task_numbering`` pair owns the DDL; this helper owns the
+    data half, which has no cross-dialect SQL form (``derive_task_prefix`` drops
+    non-ASCII characters and SQLite has no regex). It runs in one transaction
+    (PLAN §B1.5), and every ``WHERE`` clause here matches 0 rows on a re-run, so
+    a second pass writes nothing (PLAN §B1.5 / §B2.3.2).
+
+    Returns the rows written per step -- all zero when nothing was left to do.
+
+    ★ Counter seeding (``counters``) is ``INSERT OR IGNORE`` / ``ON CONFLICT DO
+    NOTHING``, so an *existing* ``project_task_counters`` row is never raised to
+    the freshly computed ``last_seq``. That is sound only for this helper's one
+    call site: the 24 -> 27 step, where the table was just created by the 027
+    pair and is therefore empty. If this helper is ever wired into the repair
+    chain or run by hand against a non-empty counter table, the seeding must
+    become a three-way maximum merge instead -- SQLite ``MAX(last_seq, ?)`` /
+    PostgreSQL ``GREATEST(last_seq, ?)`` -- otherwise a lower computed value is
+    silently dropped.
+    """
+    counts = {
+        "task_prefix": 0,
+        "task_number": 0,
+        "counters": 0,
+        "owners": 0,
+        "executors": 0,
+        "owners_skipped": 0,
+        "invalid_skipped": 0,
+    }
+    if not _table_exists(db, "projects") or not _table_exists(db, "project_tasks"):
+        return counts
+    if "task_prefix" not in _table_columns(db, "projects"):
+        # The 027 pair has not run: a database whose recorded watermark skipped
+        # it. Nothing to backfill, and the columns do not exist to write.
+        return counts
+
+    from octop.infra.db.task_prefix import derive_task_prefix  # noqa: PLC0415
+
+    if db.dialect == "postgresql":
+        seed_counter = (
+            "INSERT INTO project_task_counters(project_id, last_seq) VALUES (?, ?)"
+            " ON CONFLICT(project_id) DO NOTHING"
+        )
+        insert_owner = (
+            "INSERT INTO project_task_owners(task_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING"
+        )
+        insert_executor = (
+            "INSERT INTO project_task_executors(task_id, subject_type, subject_id)"
+            " VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
+        )
+    else:
+        seed_counter = (
+            "INSERT OR IGNORE INTO project_task_counters(project_id, last_seq) VALUES (?, ?)"
+        )
+        insert_owner = "INSERT OR IGNORE INTO project_task_owners(task_id, user_id) VALUES (?, ?)"
+        insert_executor = (
+            "INSERT OR IGNORE INTO project_task_executors"
+            "(task_id, subject_type, subject_id) VALUES (?, ?, ?)"
+        )
+
+    # One transaction for the whole backfill (PLAN §B1.5). Nothing here reports
+    # to ``audit_log``: this is an idempotent rebuild, not an exception report.
+    with db.transaction() as conn:
+        for row in conn.execute(
+            "SELECT project_id, name FROM projects WHERE task_prefix = ''"
+        ).fetchall():
+            conn.execute(
+                "UPDATE projects SET task_prefix = ? WHERE project_id = ?",
+                (
+                    derive_task_prefix(str(row["name"] or ""), str(row["project_id"])),
+                    row["project_id"],
+                ),
+            )
+            counts["task_prefix"] += 1
+
+        project_ids = [
+            str(row["project_id"])
+            for row in conn.execute(
+                "SELECT DISTINCT project_id FROM project_tasks WHERE task_number IS NULL"
+            ).fetchall()
+        ]
+        for project_id in project_ids:
+            counter = conn.execute(
+                "SELECT last_seq FROM project_task_counters WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            last_seq = int(counter["last_seq"]) if counter is not None else 0
+            prefix = str(
+                conn.execute(
+                    "SELECT task_prefix FROM projects WHERE project_id = ?", (project_id,)
+                ).fetchone()["task_prefix"]
+            )
+            # ``repos/project_tasks.py`` lists with the same key order.
+            task_ids = [
+                str(row["task_id"])
+                for row in conn.execute(
+                    "SELECT task_id FROM project_tasks"
+                    " WHERE project_id = ? AND task_number IS NULL"
+                    " ORDER BY sort_order, created_at, id",
+                    (project_id,),
+                ).fetchall()
+            ]
+            for task_id in task_ids:
+                last_seq += 1
+                conn.execute(
+                    "UPDATE project_tasks SET task_number = ? WHERE task_id = ?",
+                    (_task_number(prefix, last_seq), task_id),
+                )
+                counts["task_number"] += 1
+            counts["counters"] += conn.execute(seed_counter, (project_id, last_seq)).rowcount
+
+        # Existing single subject -> the two child tables (PLAN §B2.3.2). The
+        # ASCII-decimal gate is the cross-dialect form of "CAST to integer":
+        # SQLite would silently cast '7.0'/'abc' to 0 while PostgreSQL errors.
+        # A bare ``int()`` would be *wider* than PG's cast -- it accepts
+        # underscores ('7_0' -> 70), surrounding whitespace (' 7 ' -> 7) and
+        # non-ASCII digits ('٧' -> 7) -- i.e. it would silently remap a dirty id
+        # onto a DIFFERENT existing user. ``isascii() and isdigit()`` accepts
+        # exactly ASCII decimal ('07' included) and rejects the rest.
+        # ★ ``f3-select-exclude`` (user ruling 2026-10-08): a ``user`` row whose
+        # well-formed id names no ``users`` row cannot be represented in
+        # ``project_task_owners.user_id``, so the SELECT below excludes it
+        # outright. Counting it instead made the "0 rows" judgement false: such a
+        # row never gains an owner/executor row, so the two NOT EXISTS guards
+        # never become true for it and *every* re-run re-read
+        # ``owners_skipped: 1`` while writing nothing.
+        # The exclusion is spelled in SQL -- not only in the loop -- so the row
+        # never enters the set. It reuses the same ASCII-decimal gate: PostgreSQL
+        # gets a regex plus a CASE (which, unlike AND, guarantees evaluation
+        # order -- a bare ``::numeric`` may run before the regex and raise
+        # 22P02); SQLite gets GLOB (its CAST never raises, so the guard there
+        # only keeps dirty ids in the set for ``invalid_skipped``). ``NUMERIC``
+        # rather than ``INTEGER`` so an over-long id skips instead of
+        # overflowing, and '07' stays mappable on both dialects.
+        # ★ ``P0-3-R1`` (2026-10-08): PostgreSQL spells this as
+        # ``CASE WHEN … THEN (NOT IN …) ELSE FALSE END`` -- with ``NOT IN`` left
+        # outside the ``CASE`` the whole predicate is NULL whenever the regex
+        # misses, and ``WHERE NOT (…)`` admits only TRUE, so every dirty id was
+        # dropped from the set (a dialect fork against SQLite).
+        # Tasks that already carry a mapping are skipped, so a re-run reads and
+        # writes nothing at all (the "0 rows" idempotency judgement).
+        valid_users = {int(row["id"]) for row in conn.execute("SELECT id FROM users").fetchall()}
+        exclude_unrepresentable = _exclude_unrepresentable_sql(db.dialect)
+        for row in conn.execute(
+            "SELECT t.task_id, t.assignee_type, t.assignee_id FROM project_tasks t"
+            " WHERE t.assignee_type IS NOT NULL AND t.assignee_id IS NOT NULL"
+            " AND NOT EXISTS (SELECT 1 FROM project_task_owners o WHERE o.task_id = t.task_id)"
+            " AND NOT EXISTS (SELECT 1 FROM project_task_executors e WHERE e.task_id = t.task_id)"
+            f"{exclude_unrepresentable}"
+        ).fetchall():
+            assignee_type = str(row["assignee_type"])
+            assignee_id = str(row["assignee_id"])
+            if assignee_type == "user":
+                if not (assignee_id.isascii() and assignee_id.isdigit()):
+                    # Not an ASCII decimal: neither side gets a row (§B2.3.2).
+                    counts["invalid_skipped"] += 1
+                    continue
+                user_id = int(assignee_id)
+                if user_id not in valid_users:
+                    # ``project_task_owners.user_id`` REFERENCES users(id): a
+                    # deleted user's id cannot be represented in the child table.
+                    counts["owners_skipped"] += 1
+                    continue
+                counts["owners"] += conn.execute(insert_owner, (row["task_id"], user_id)).rowcount
+            elif assignee_type in ("agent", "team") and assignee_id:
+                counts["executors"] += conn.execute(
+                    insert_executor, (row["task_id"], assignee_type, assignee_id)
+                ).rowcount
+    return counts
 
 
 def _repair_legacy_schema(db: DatabasePool) -> None:
@@ -1935,6 +2234,12 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
+    if version == 27:
+        # The numbered pair ran the DDL above; the data backfill needs Python
+        # (``derive_task_prefix`` has no cross-dialect SQL form) and is
+        # idempotent -- a re-run writes 0 rows (PLAN §B1.5).
+        counts = _backfill_project_task_numbering(db)
+        logger.info("v27 backfill: %s", counts)
 
 
 def run_migrations(db: DatabasePool) -> None:
@@ -1970,6 +2275,12 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_published_experts_schema(db)
             if version == 10:
                 _ensure_knowledge_bases_schema(db)
+            if version == 27:
+                # The numbered pair ran the DDL above; the data backfill needs
+                # Python (``derive_task_prefix`` has no cross-dialect SQL form)
+                # and is idempotent -- a re-run writes 0 rows (PLAN §B1.5).
+                counts = _backfill_project_task_numbering(db)
+                logger.info("v27 backfill: %s", counts)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -1990,3 +2301,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_user_role_schema(db)
     _ensure_bridge_connections_schema(db)
     _ensure_projects_schema(db)
+    _ensure_team_runs_schema(db)

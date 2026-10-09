@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Pre-commit gate: make precommit (format BE+FE + lint + lint-frontend + typecheck +
-# testmon-scoped tests) + dashboard build. CI runs those same legs unscoped and
-# read-only (make lint / lint-frontend / typecheck / test / test-frontend); this is a
-# fast, change-aware local gate so commits don't wait on the whole test matrix.
+# testmon-scoped backend tests + the **full** frontend suite) + dashboard build. CI runs
+# those same legs unscoped and read-only (make lint / lint-frontend / typecheck / test /
+# test-frontend); this is a fast, change-aware local gate so commits don't wait on the
+# whole backend test matrix.
+# The frontend leg is deliberately unscoped (P1-9): the dashboard has no change-aware
+# runner here, so a red vitest suite blocks the commit instead of only warning.
 # Enable once per clone:  make install-hooks
 # Bypass (emergency only): SKIP_PRECOMMIT=1 git commit ...
 # Or: git commit --no-verify
@@ -23,7 +26,7 @@ while IFS= read -r line; do
   [[ -n "$line" ]] && STAGED_FILES+=("$line")
 done < <(git diff --cached --name-only --diff-filter=ACMR || true)
 
-echo "[pre-commit] make precommit  (format-all + lint + typecheck + testmon-scoped test)"
+echo "[pre-commit] make precommit  (format-all + lint + lint-frontend + typecheck + testmon-scoped test + full frontend suite)"
 make precommit
 
 # If format rewrote files that were already staged, refresh the index so the

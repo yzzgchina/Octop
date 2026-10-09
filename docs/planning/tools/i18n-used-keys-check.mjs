@@ -1,20 +1,22 @@
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Repo root = the checkout this script lives in (docs/planning/tools/ -> ../../..).
+// Set OCTOP_ROOT to check another checkout. Never hard-code a machine path here.
+const repo = process.env.OCTOP_ROOT
+  ? path.resolve(process.env.OCTOP_ROOT)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 const files = [
-  "D:/nancc/octop/Octop-develop/dashboard/src/pages/Projects/index.tsx",
-  "D:/nancc/octop/Octop-develop/dashboard/src/pages/Projects/Detail/index.tsx",
+  path.join(repo, "dashboard/src/pages/Projects/index.tsx"),
+  path.join(repo, "dashboard/src/pages/Projects/Detail/index.tsx"),
 ];
 const en = JSON.parse(
-  fs.readFileSync(
-    "D:/nancc/octop/Octop-develop/dashboard/src/locales/en.json",
-    "utf8",
-  ),
+  fs.readFileSync(path.join(repo, "dashboard/src/locales/en.json"), "utf8"),
 );
 const zh = JSON.parse(
-  fs.readFileSync(
-    "D:/nancc/octop/Octop-develop/dashboard/src/locales/zh.json",
-    "utf8",
-  ),
+  fs.readFileSync(path.join(repo, "dashboard/src/locales/zh.json"), "utf8"),
 );
 
 function get(obj, dotted) {

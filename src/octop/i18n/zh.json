@@ -500,6 +500,7 @@
     "PROJECT_TASK_TAG_INVALID": "标签不存在或不属于当前项目。",
     "PROJECT_TASK_DATE_INVALID": "任务日期不合法。",
     "PROJECT_TASK_DISPATCH_INVALID": "该任务的负责人不是可运行的智能体或团队。",
+    "PROJECT_TASK_ASSIGNEE_INVALID": "负责人必须指向一个已存在的用户。",
     "PROJECT_CUSTOM_FIELD_NOT_FOUND": "自定义字段不存在。",
     "PROJECT_CUSTOM_FIELD_INVALID": "自定义字段定义不合法。",
     "PROJECT_CUSTOM_FIELD_VALUE_INVALID": "自定义字段取值不符合字段定义。",

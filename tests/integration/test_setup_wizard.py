@@ -7,6 +7,7 @@ and the 410 behavior on completed setups.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,28 @@ async def test_initial_admin_respects_locale_body(env: Any) -> None:
 # ─── /setup/status ─────────────────────────────────────────────────
 
 
+def _status_body_text(response: Any) -> str:
+    """Full response payload as text so *any* field can be scanned for a leak.
+
+    Deliberately dumps the whole body (not just known keys) so a reintroduced
+    field — under any name — is still caught by the HOME assertions below.
+    """
+    return json.dumps(response.json(), ensure_ascii=False, sort_keys=True)
+
+
+def _assert_response_carries_no_home_path(response: Any) -> str:
+    """Fail when the unauthenticated body embeds the server HOME directory.
+
+    The endpoint is JWT-exempt (``/api/setup/``), so echoing a server-local
+    absolute path hands the caller the server HOME without any credential.
+    """
+    body_text = _status_body_text(response)
+    home_text = str(Path.home())
+    assert home_text not in body_text, f"response leaked server HOME {home_text!r}: {body_text}"
+    assert str(Path.home() / WIZARD_FILE_NAME) not in body_text, body_text
+    return body_text
+
+
 async def test_status_reports_wizard_password_exists(env: Any) -> None:
     c, _srv, home = env
     r = await c.get("/api/setup/status")
@@ -119,7 +142,15 @@ async def test_status_reports_wizard_password_exists(env: Any) -> None:
     assert body["setup_required"] is True
     assert body["wizard_password_required"] is True
     assert body["wizard_password_exists"] is True
-    assert body["wizard_password_path"] == str(Path.home() / WIZARD_FILE_NAME)
+
+
+async def test_status_never_leaks_server_home_path(env: Any) -> None:
+    """Unauthenticated ``GET /api/setup/status`` must not expose the HOME dir."""
+    c, _srv, _home = env
+    r = await c.get("/api/setup/status")
+    assert r.status_code == 200
+    body_text = _assert_response_carries_no_home_path(r)
+    assert "wizard_password_path" not in json.loads(body_text)
 
 
 async def test_begin_issues_token_when_password_not_required(tmp_octop_home: Path) -> None:
@@ -130,7 +161,7 @@ async def test_begin_issues_token_when_password_not_required(tmp_octop_home: Pat
         body = r.json()
         assert body["wizard_password_required"] is False
         assert body["wizard_password_exists"] is False
-        assert body["wizard_password_path"] is None
+        _assert_response_carries_no_home_path(r)
 
         r = await c.post("/api/setup/begin")
         assert r.status_code == 200
@@ -255,17 +286,28 @@ async def test_test_provider_returns_error_for_bad_key(env: Any) -> None:
     assert r.json()["ok"] is False
 
 
-async def test_resume_wizard_after_admin_created(env: Any) -> None:
+async def test_resume_wizard_requires_admin(env: Any) -> None:
     c, _srv, home = env
     pw = read_password(Path.home())
     tok = (await c.post("/api/setup/verify-password", json={"password": pw})).json()["wizard_token"]
-    await c.post(
-        "/api/setup/initial-admin",
-        json={"username": "admin", "password": "TestPass12"},
-        headers={"Authorization": f"Bearer {tok}"},
-    )
+    admin = (
+        await c.post(
+            "/api/setup/initial-admin",
+            json={"username": "admin", "password": "TestPass12"},
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+    ).json()
+
+    # Unauthenticated callers must never mint a wizard token mid-setup.
     r = await c.post("/api/setup/resume-wizard")
-    assert r.status_code == 200
+    assert r.status_code == 401, r.text
+
+    # The admin JWT issued by initial-admin is the credential for this phase.
+    r = await c.post(
+        "/api/setup/resume-wizard",
+        headers={"Authorization": f"Bearer {admin['access_token']}"},
+    )
+    assert r.status_code == 200, r.text
     body = r.json()
     assert isinstance(body["wizard_token"], str)
     assert body["expires_in"] > 0
