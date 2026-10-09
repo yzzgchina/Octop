@@ -273,9 +273,25 @@ precommit: format-all lint lint-frontend typecheck test-affected test-frontend
 # silently run zero tests. The patch in conftest.py / tests/support/
 # testmon_staged_changes.py redirects detection to `git diff HEAD` (staged +
 # unstaged) so the gate actually fires on a commit's changes.
+#
+# ★ `P3-22`：**冷启动**（无 `.testmondata`，或该库里还没有任何 `test_execution`
+#   记录 ⇒ 典型于「新克隆 / 刚删掉库」）时，testmon 在 `pytest_configure` 里
+#   走 `first_build`：没有任何基线指纹 ⇒ **它必须跑满全量**才能建立基线
+#   （本机实测 ≈1007 s / 5845 用例）。`P1-9` 两次实测的症状正与此吻合 ——
+#   其证据明确记载首跑「钩子此前无 .testmondata」⇒ `5795 passed / 1007.19 s`。
+#
+#   本目标因此把两种状态**显式**打印出来，避免把「正在建基线的全量」误读成
+#   「变更范围没生效」（本卡要消除的正是这个歧义）。★ 不删库、不跳过检查、
+#   不削弱断言：冷启动的全量跑是 testmon 建立基线的**必要**一次；建好后每提交
+#   只跑受影响用例。★ 稳态下命令仍是 `pytest --testmon`，与改前**逐字一致**。
 .PHONY: test-affected
 test-affected:
 	@echo "[test] pytest (testmon: only tests affected by changes)..."
+	@$(PYTHON) -c "import os, sqlite3; \
+p = os.environ.get('TESTMON_DATAFILE', '.testmondata'); \
+n = 0; \
+exec('try:\n    n = sqlite3.connect(p).execute(\"select count(*) from test_execution\").fetchone()[0]\nexcept Exception:\n    n = 0') if os.path.exists(p) else None; \
+print('[test] ★ testmon 无基线（冷启动）⇒ 本次跑满后端全量以建立基线（≈16 min，仅此一次）') if n == 0 else print('[test] testmon 基线：%d 条用例记录 ⇒ 只跑受影响用例' % n)"
 	$(RUN) pytest --testmon
 
 # ─── Quality (frontend) ──────────────────────────────────────────────────────
