@@ -46,11 +46,11 @@ import DynamicTab from "./DynamicTab";
 import ProjectMemoryTab from "./ProjectMemoryTab";
 import RightRail from "./RightRail";
 import QuickInput from "./QuickInput";
-import TaskCreateModal, {
-  type TaskCreateValues,
-  type TaskPatchValues,
-} from "./TaskCreateModal";
+import TaskCreateModal, { type TaskPatchValues } from "./TaskCreateModal";
 import TaskDetailPanel, { hasTaskDetailParam } from "./TaskDetailPanel";
+// ★★ 收敛（P2-5）：`taskToValues()` 唯一出处 = `./taskCreateValues`
+// （本文件原有的那份同名私有拷贝已删除 —— 见该模块的 docstring）。
+import { taskToValues } from "./taskCreateValues";
 import TaskListView from "./TaskListView";
 import styles from "./index.module.less";
 import TagsManager from "./TagsManager";
@@ -117,33 +117,6 @@ const DETAIL_TABS: TabBarItem<DetailTabKey>[] = [
 function parseTab(raw: string | null): DetailTabKey {
   const found = DETAIL_TABS.find((tab) => tab.key === raw);
   return found ? found.key : "plan";
-}
-
-/**
- * `ProjectTask` → 编辑器值的适配器（PLAN §5.1：**不复制字段定义**，只做形状映射；
- * 字段类型全部来自 `TaskCreateModal` 导出的 `TaskCreateValues`）。
- */
-function taskToValues(task: ProjectTask): TaskCreateValues {
-  return {
-    task_id: task.task_id,
-    title: task.title,
-    description: task.description,
-    status: task.status,
-    priority: task.priority,
-    // 双主体回填（PLAN §B2.1b）：`TaskOut.owners` / `executors` **恒为数组**
-    // （§B2.5 (a)：绝不返回 null）⇒ 直接透传，不做 `?? []`。二者与派生的单值镜像
-    // `assignee_type` / `assignee_id` 并存，但**写入**只走这两个数组（V3 互斥）。
-    owners: task.owners ?? [],
-    executors: task.executors ?? [],
-    tag_ids: (task.tags ?? []).map((tag) => tag.tag_id),
-    start_at: task.start_at,
-    due_at: task.due_at,
-    parent_id: task.parent_id,
-    deps: task.deps ?? [],
-    custom_fields: Object.fromEntries(
-      (task.custom_fields ?? []).map((field) => [field.field_id, field.value]),
-    ),
-  };
 }
 
 function ProjectDetailPage() {
@@ -481,6 +454,10 @@ function ProjectDetailPage() {
             loading={loading}
             canEdit={canEdit}
             tasks={tasks}
+            // `P2-5` 五段：meta 行的项目 chip 与「人 / 执行主体」两槽的名字解析
+            // 都用**页级已加载的数据**（`project.name` / `members`）—— 不新增读取环。
+            projectName={project.name}
+            members={members}
             onBack={closeTask}
             onChanged={load}
           />

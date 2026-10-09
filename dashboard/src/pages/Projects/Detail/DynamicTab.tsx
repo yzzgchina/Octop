@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Button, Input, Spin, Typography } from "antd";
-import { BadgeCheck, Send } from "lucide-react";
+import { Button, Input, Typography } from "antd";
+import { Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 
@@ -14,32 +14,10 @@ import { useProjectMembers } from "../../../hooks/useProjectMembers";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { message } from "../../../utils/antdMessage";
-import { formatServerDateTime } from "../../../utils/formatMessageTime";
+import CommentFeed from "./CommentFeed";
 import styles from "./DynamicTab.module.less";
 
 const { Text } = Typography;
-
-/**
- * 结论文本 =「结论 · 由 <谁> 采纳」（`P3` 展示形态 / `P3b` 显示口径 / `L30`）。
- *
- * 回退链（**与 `feed-author` 同一条口径**：名字优先 → 回退 → 不空白）：
- *   ① `concluded_by_name`（后端解析好，**直接用**，不自己拼 ✗）
- *   ② 拿不到名字 ⇒ `concluded_by_type:concluded_by_id`（★ **仍能区分「谁」**）
- *   ③ 连 id 都没有 ⇒ `concludedByUnknown`（「已注销用户」，**不得空白**）
- */
-function concludedByLabel(
-  comment: ProjectComment,
-  t: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  const name = comment.concluded_by_name?.trim();
-  if (name) return t("projects.conclusionBy", { name });
-  const id = comment.concluded_by_id?.trim();
-  if (id) {
-    const kind = comment.concluded_by_type?.trim();
-    return t("projects.conclusionBy", { name: kind ? `${kind}:${id}` : id });
-  }
-  return t("projects.concludedByUnknown");
-}
 
 /** 与 QuickInput 同一口径的可写角色集（`PROJECT_WRITE`）。 */
 const WRITE_ROLES = new Set(["owner", "admin", "member"]);
@@ -76,8 +54,6 @@ function DynamicTab() {
     Array<{ type: string; id: string; label: string }>
   >([]);
   const [mentionsTouched, setMentionsTouched] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingBody, setEditingBody] = useState("");
 
   const {
     data: comments,
@@ -147,14 +123,12 @@ function DynamicTab() {
     }
   };
 
-  /** 编辑保存（`PATCH …/comments/{cid}`）。 */
-  const saveEdit = async (commentId: string) => {
-    const next = editingBody.trim();
+  /** 编辑保存（`PATCH …/comments/{cid}`）。正文由 `CommentFeed` 注入（展示局部状态）。 */
+  const saveEdit = async (commentId: string, body: string) => {
+    const next = body.trim();
     if (!next) return;
     try {
       await projectsApi.updateComment(projectId, commentId, next);
-      setEditingId(null);
-      setEditingBody("");
       await refresh();
     } catch (error) {
       message.error(apiErrorMessage(error, t("projects.loadFailed"), t));
@@ -332,162 +306,31 @@ function DynamicTab() {
         </div>
       ) : null}
 
-      {loading && comments.length === 0 ? (
-        <div className={styles.centered}>
-          <Spin size="small" />
-        </div>
-      ) : comments.length === 0 && relevanceOnly ? (
-        <Text type="secondary" data-testid="feed-empty-relevance">
-          {t("projects.feedEmptyRelevance")}
-        </Text>
-      ) : comments.length === 0 && authorFilter ? (
-        <Text type="secondary" data-testid="feed-empty-filtered">
-          {t("projects.feedEmptyFiltered")}
-        </Text>
-      ) : comments.length === 0 ? (
-        <Text type="secondary" data-testid="feed-empty">
-          {t("projects.feedEmpty")}
-        </Text>
-      ) : (
-        <ul className={styles.list} data-testid="feed-list">
-          {comments.map((comment) => (
-            <li
-              key={comment.comment_id}
-              className={styles.item}
-              data-testid="feed-item"
-            >
-              <div className={styles.itemHead}>
-                <span className={styles.author} data-testid="feed-author">
-                  {/* 显示名优先；拿不到 ⇒ 回退 `type:id`（**不得空白**，与成员行同口径）。 */}
-                  {comment.name?.trim()
-                    ? comment.name
-                    : `${comment.author_type}:${comment.author_id}`}
-                </span>
-                <span className={styles.time}>
-                  {formatServerDateTime(comment.created_at, timeZone)}
-                </span>
-                {comment.concluded ? (
-                  <span
-                    className={styles.badge}
-                    data-testid="comment-conclusion-badge"
-                  >
-                    <BadgeCheck size={13} aria-hidden />
-                    {t("projects.conclusionBadge")}
-                  </span>
-                ) : null}
-                {comment.concluded ? (
-                  <span
-                    className={styles.concludedBy}
-                    data-testid="comment-conclusion-by"
-                  >
-                    {concludedByLabel(comment, t)}
-                  </span>
-                ) : null}
-              </div>
-              {editingId === comment.comment_id ? (
-                <div className={styles.editRow}>
-                  <Input.TextArea
-                    className={styles.composerInput}
-                    value={editingBody}
-                    autoSize={{ minRows: 1, maxRows: 6 }}
-                    aria-label={t("projects.feedPost")}
-                    data-testid="comment-edit-input"
-                    onChange={(event) => setEditingBody(event.target.value)}
-                  />
-                  <Button
-                    size="small"
-                    type="primary"
-                    data-testid="comment-edit-save"
-                    onClick={() => void saveEdit(comment.comment_id)}
-                  >
-                    {t("projects.feedPost")}
-                  </Button>
-                  <Button
-                    size="small"
-                    data-testid="comment-edit-cancel"
-                    onClick={() => setEditingId(null)}
-                  >
-                    {t("common.cancel", "取消")}
-                  </Button>
-                </div>
-              ) : (
-                <div className={styles.body}>{comment.body}</div>
-              )}
-              {canWrite ? (
-                <div className={styles.actions}>
-                  <Button
-                    type="link"
-                    size="small"
-                    className={styles.concludeAction}
-                    onClick={() => void toggleConclusion(comment)}
-                  >
-                    {comment.concluded
-                      ? t("projects.unconclude")
-                      : t("projects.conclude")}
-                  </Button>
-                  <Button
-                    type="link"
-                    size="small"
-                    data-testid="comment-edit"
-                    onClick={() => {
-                      setEditingId(comment.comment_id);
-                      setEditingBody(comment.body);
-                    }}
-                  >
-                    {t("common.edit", "编辑")}
-                  </Button>
-                  {comment.concluded ? (
-                    <>
-                      {/* ★ 与后端**同一口径**：已采纳 ⇒ 删除【事前禁用】，提示用**同一个键**
-                          （`apiErrors.PROJECT_COMMENT_CONCLUDED`，与 409 的 message 同源）。 */}
-                      <Button
-                        type="link"
-                        size="small"
-                        disabled
-                        data-testid="comment-delete"
-                      >
-                        {t("common.delete", "删除")}
-                      </Button>
-                      <span
-                        className={styles.blockedHint}
-                        data-testid="comment-delete-blocked"
-                      >
-                        {t("apiErrors.PROJECT_COMMENT_CONCLUDED")}
-                      </span>
-                    </>
-                  ) : (
-                    <Button
-                      type="link"
-                      size="small"
-                      data-testid="comment-delete"
-                      onClick={() => void removeComment(comment.comment_id)}
-                    >
-                      {t("common.delete", "删除")}
-                    </Button>
-                  )}
-                  <label className={styles.attachLabel}>
-                    <input
-                      type="file"
-                      className={styles.attachInput}
-                      data-testid="comment-attachment-input"
-                      aria-label={t("projects.attachFile")}
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file)
-                          void attachToComment(comment.comment_id, file);
-                        event.target.value = "";
-                      }}
-                    />
-                    <span data-testid="comment-attach">
-                      {t("projects.feedPost")}
-                    </span>
-                  </label>
-                </div>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      )}
+      <CommentFeed
+        comments={comments}
+        timeZone={timeZone}
+        canWrite={canWrite}
+        loading={loading}
+        empty={
+          relevanceOnly ? (
+            <Text type="secondary" data-testid="feed-empty-relevance">
+              {t("projects.feedEmptyRelevance")}
+            </Text>
+          ) : authorFilter ? (
+            <Text type="secondary" data-testid="feed-empty-filtered">
+              {t("projects.feedEmptyFiltered")}
+            </Text>
+          ) : (
+            <Text type="secondary" data-testid="feed-empty">
+              {t("projects.feedEmpty")}
+            </Text>
+          )
+        }
+        onConclude={(comment) => void toggleConclusion(comment)}
+        onSaveEdit={(commentId, body) => void saveEdit(commentId, body)}
+        onDelete={(commentId) => void removeComment(commentId)}
+        onAttach={(commentId, file) => void attachToComment(commentId, file)}
+      />
     </div>
   );
 }
