@@ -255,17 +255,28 @@ async def test_test_provider_returns_error_for_bad_key(env: Any) -> None:
     assert r.json()["ok"] is False
 
 
-async def test_resume_wizard_after_admin_created(env: Any) -> None:
+async def test_resume_wizard_requires_admin(env: Any) -> None:
     c, _srv, home = env
     pw = read_password(Path.home())
     tok = (await c.post("/api/setup/verify-password", json={"password": pw})).json()["wizard_token"]
-    await c.post(
-        "/api/setup/initial-admin",
-        json={"username": "admin", "password": "TestPass12"},
-        headers={"Authorization": f"Bearer {tok}"},
-    )
+    admin = (
+        await c.post(
+            "/api/setup/initial-admin",
+            json={"username": "admin", "password": "TestPass12"},
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+    ).json()
+
+    # Unauthenticated callers must never mint a wizard token mid-setup.
     r = await c.post("/api/setup/resume-wizard")
-    assert r.status_code == 200
+    assert r.status_code == 401, r.text
+
+    # The admin JWT issued by initial-admin is the credential for this phase.
+    r = await c.post(
+        "/api/setup/resume-wizard",
+        headers={"Authorization": f"Bearer {admin['access_token']}"},
+    )
+    assert r.status_code == 200, r.text
     body = r.json()
     assert isinstance(body["wizard_token"], str)
     assert body["expires_in"] > 0
