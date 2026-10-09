@@ -375,14 +375,30 @@ def _mutate(tmp_path: Path, source: Path, old: str, new: str) -> str:
     return mutated
 
 
-_CLASSIFIER_STAGE = " | python3 scripts/vitest-fail-classify.py"
+# The classifier pipe stage is located by the classifier's **script name** only:
+# whatever spells the interpreter in front of it (`python3`, `$(PYTHON)`,
+# `./.venv/bin/python`, `uv run python`, …) is *matched* but stays out of the
+# anchor, so re-spelling it — exactly the `P1-19` change that broke these cases —
+# cannot break them again. The anchor still spans the whole `| …` stage, so
+# removing it leaves a valid pipeline rather than a dangling pipe.
+_CLASSIFIER_STAGE_RE = re.compile(rf"\|\s*(?:[^\s|;&]+\s+)*\S*{re.escape(_FRONTEND_CLASSIFIER)}")
+
+
+def _classifier_stage() -> str:
+    """Verbatim `| <interpreter> …vitest-fail-classify.py` stage of the Makefile."""
+    match = _CLASSIFIER_STAGE_RE.search(_makefile_text())
+    assert match is not None, (
+        f"classifier pipe stage not found: `test-frontend` must pipe vitest "
+        f"through {_FRONTEND_CLASSIFIER!r}"
+    )
+    return match.group(0)
 
 
 def test_classifier_removal_turns_the_nail_red(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """摘掉分类器 ⇒ 断言必须红（"没跑" 不能被读成全绿）。"""
-    mutated = _mutate(tmp_path, MAKEFILE, _CLASSIFIER_STAGE, "")
+    mutated = _mutate(tmp_path, MAKEFILE, _classifier_stage(), "")
     monkeypatch.setattr(sys.modules[__name__], "_makefile_text", lambda: mutated)
     with pytest.raises(AssertionError, match="vitest-fail-classify"):
         test_test_frontend_target_is_blocking()
@@ -402,7 +418,8 @@ def test_readding_or_true_turns_the_nail_red(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """给 `test-frontend` 加回 `|| true` ⇒ 断言必须红。"""
-    mutated = _mutate(tmp_path, MAKEFILE, _CLASSIFIER_STAGE, f"{_CLASSIFIER_STAGE} || true")
+    stage = _classifier_stage()
+    mutated = _mutate(tmp_path, MAKEFILE, stage, f"{stage} || true")
     monkeypatch.setattr(sys.modules[__name__], "_makefile_text", lambda: mutated)
     with pytest.raises(AssertionError, match="must propagate its failure"):
         test_test_frontend_target_is_blocking()
