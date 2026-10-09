@@ -11,6 +11,7 @@ git clone https://github.com/TencentCloud/Octop.git octop
 cd octop
 make install          # backend dev dependencies
 make install-hooks    # once per clone: pre-commit runs make precommit + dashboard build
+make install-frontend # once per clone: dashboard npm deps (npm ci) — required by `make all`'s frontend legs
 make all              # format-all + lint + lint-frontend + typecheck + test + test-frontend (ship bar)
 ```
 
@@ -28,6 +29,7 @@ make check-all        # full stack quality gate
 | Command | Description |
 |---------|-------------|
 | `make install` | Install Python dev dependencies |
+| `make install-frontend` | Install dashboard npm dependencies (`npm ci`) — required before any frontend leg (`prettier` / `eslint` / `vitest` are not installed otherwise) |
 | `make install-hooks` | Point git at `.githooks` (pre-commit: `make precommit` + dashboard build) |
 | `make all` | `format-all` + `lint` + `lint-frontend` + `typecheck` + `test` + `test-frontend` |
 | `make check-all` | Full stack quality gate |
@@ -94,6 +96,7 @@ git clone https://github.com/TencentCloud/Octop.git octop
 cd octop
 make install
 make install-hooks    # 每个 clone 执行一次：提交前跑 make precommit + 前端 build
+make install-frontend # 每个 clone 执行一次：前端依赖（npm ci）—— 否则 `make all` 的前端腿必挂
 make all              # format-all + lint + lint-frontend + typecheck + test + test-frontend（ship bar）
 ```
 

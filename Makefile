@@ -49,13 +49,14 @@
 #   make install-hooks      - Point git at .githooks (pre-commit runs make precommit + dashboard build)
 #   make install            - Install Python dev dependencies (uv sync / pip install -e ".[dev]")
 #   make install-dev        - Same rule as install
+#   make install-frontend   - Install dashboard npm dependencies (npm ci; required by the frontend legs)
 #   make install-tools      - Install build + twine for publishing
 #   make clean              - Remove build artifacts and caches
 #   make clean-online       - Remove the .venv-online environment
 #   make version            - Print the project version from pyproject.toml
 #
 # Prerequisites:
-#   - Node.js + npm   (frontend)
+#   - Node.js + npm   (frontend; run `make install-frontend` once per clone)
 #   - Python 3.12+    (backend)
 #   - uv              (recommended) or pip
 #   - twine           (publish: pip install twine / make install-tools)
@@ -135,6 +136,7 @@ help:
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  install-hooks    Point git to .githooks (pre-commit: make precommit + dashboard build)"
+	@echo "  install-frontend Install dashboard npm dependencies (npm ci; required by prettier/eslint/vitest)"
 	@echo "  install          Install Python dev dependencies (alias: install-dev)"
 	@echo "  install-dev      uv sync / pip install -e \".[dev]\""
 	@echo "  install-tools    Install build + twine for publishing"
@@ -377,6 +379,18 @@ typecheck-all: typecheck typecheck-frontend
 check-all: lint-all typecheck-all test test-frontend
 
 # ─── Utilities ───────────────────────────────────────────────────────────────
+
+.PHONY: install-frontend
+# ★ `P3-18`：前端先决条件。干净检出上 `dashboard/node_modules` 不存在 ⇒
+#   `format-frontend` / `lint-frontend` / `test-frontend` 一跑就 `prettier: command not found`
+#   （exit 127），而 `make all` 的第一条腿正是 `format-all` ⇒ 照 §6 走的新人首跑必挂。
+# ★ 本目标就是那道缺的前置：`npm ci`（按 `package-lock.json` 可复现安装）。
+# ★ 与 `build-frontend` 内联的 `npm ci` **职责重叠但都不动** —— 本目标**不**接进
+#   `all:` / `precommit:`（改依赖图 = 改门禁语义，超出本卡；由 `make all` 的腿自己报缺）。
+install-frontend:
+	@echo "[install-frontend] Installing dashboard dependencies (npm ci)..."
+	cd $(DASHBOARD_DIR) && npm ci
+	@echo "[install-frontend] Done."
 
 .PHONY: install-hooks
 install-hooks:
