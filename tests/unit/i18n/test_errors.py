@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from octop.i18n import error_message
+from octop.i18n import loader as i18n_loader
+from octop.i18n.loader import flatten_keys
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.locale import resolve_request_locale
 
@@ -139,15 +141,10 @@ def test_api_errors_namespaces_agree_in_both_locales():
         assert set(dash["apiErrors"]) == set(backend["errors"]) == {c.value for c in ErrorCode}
 
 
-def test_backend_locales_have_identical_key_trees():
-    repo = Path(__file__).resolve().parents[3]
-    en = json.loads((repo / "src/octop/i18n/en.json").read_text(encoding="utf-8"))
-    zh = json.loads((repo / "src/octop/i18n/zh.json").read_text(encoding="utf-8"))
-
-    def tree(value: object) -> object:
-        return {k: tree(v) for k, v in value.items()} if isinstance(value, dict) else True
-
-    assert tree(en) == tree(zh)
+# ★ 「后端 en/zh 键树全等」的**唯一**落点已搬到 `tests/unit/i18n/test_backend_keys.py`
+#   （`P1-16` · B 类序号 3）：那里走**公开 API** `octop.i18n.all_keys_for_locale`
+#   （= `loader.flatten_keys` 的同一实现），并带判别性对照。
+#   此处曾有一份**局部 `tree()` 展平**的等价拷贝（同一事实两份实现）—— 已删除，只留本注。
 
 
 def test_dashboard_chat_labels_are_paired_and_localized():
@@ -1133,3 +1130,126 @@ def test_team_code_status_mapping_matches_plan():
         assert _DEFAULT_STATUS[member] == expected, f"{code} 默认状态应为 {expected}"
         # 构造期路径同样成立（__post_init__ 读 _DEFAULT_STATUS；漏登记会 KeyError）。
         assert OctopError(member, "x").status == expected, code
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# `P1-16` · 判据面 **B 类 序号 4** —— `ErrorCode` **枚举驱动**的 **zh 显式**判据
+#                                + `loader.py` **回退分支可达性**
+#
+# ★ 为什么必须逐码钉 zh：`loader.lookup` 在 zh 缺键时**静默**回退英文
+#   （`loader.py:39-40`：`if loc != _FALLBACK_LOCALE: return _resolve_node(en_table, key)`）
+#   ⇒ 「zh 用户读到英文」**不会**让任何现存测试变红：
+#     · 本文件 `test_every_error_code_has_i18n_entry` 只判真值 —— **回退值也是真值**；
+#     · `test_error_message_zh` 只钉了 `AGENT_NAME_TAKEN` **一个**码。
+#   本节的判据把覆盖面从「1 个码」提到「**全部** `ErrorCode`」，且**逐码指出**回退。
+# ★ 点名（★ 与 `CRITERIA-29-CLASSIFICATION.md` §1 序号 4 的返红条件逐字一致）：
+#   `ErrorCode.value` 的 zh 取值**逐字等于 en**（= 回退发生）⇒ 红；zh 缺键 ⇒ 红。
+# ★ 展平**复用** `octop.i18n.loader.flatten_keys`（`all_keys_for_locale` 的同一实现），
+#   本节**零**重复展平实现。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _zh_explicit_defects(
+    tables: dict[str, dict],
+) -> tuple[list[str], dict[str, str]]:
+    """逐 `ErrorCode` 检查 zh 是否**显式**提供。
+
+    返回 `(已逐码检查的码清单, 缺陷映射)`：缺陷 = 「zh 缺键」或「zh 文本逐字等于 en」。
+    ★ 第一个返回值是**覆盖证据**（证明扫的是全部枚举成员，不是一条空跑）。
+    """
+    zh_keys = flatten_keys(tables["zh"])
+    en_keys = flatten_keys(tables["en"])
+    checked: list[str] = []
+    defects: dict[str, str] = {}
+
+    for code in ErrorCode:
+        key = f"errors.{code.value}"
+        checked.append(code.value)
+        if key not in zh_keys:
+            defects[code.value] = f"zh 缺键（{key}）⇒ lookup 静默回退英文"
+            continue
+        if key not in en_keys:
+            defects[code.value] = f"en 缺键（{key}）⇒ 回退源头本身缺失"
+            continue
+        zh_text = tables["zh"]["errors"][code.value]
+        en_text = tables["en"]["errors"][code.value]
+        if not zh_text:
+            defects[code.value] = "zh 取值为空字符串"
+        elif zh_text == en_text:
+            defects[code.value] = f"zh 文本逐字等于 en（{zh_text!r}）⇒ 回退实际发生"
+
+    return checked, defects
+
+
+def _zh_defect_message(checked: list[str], defects: dict[str, str]) -> str:
+    lines = [
+        f"{len(defects)}/{len(checked)} 个 `ErrorCode` 的 zh **不是显式**提供的：",
+        "",
+    ]
+    for code in sorted(defects):
+        lines.append(f"  {code}: {defects[code]}")
+    lines += [
+        "",
+        "实际：这些码在 zh 界面会**静默**显示英文（`loader.lookup` 的 fallback 分支）。",
+        "期望：同一键必须落在 `src/octop/i18n/zh.json` 的 `errors.*` 且文本为中文。",
+        "★ 不得靠给 `test_error_message_zh` 加一个码来「覆盖」—— 判据是**枚举驱动**的。",
+    ]
+    return "\n".join(lines)
+
+
+def test_every_error_code_has_an_explicit_zh_value():
+    """枚举驱动：**每个** `ErrorCode` 的 zh 都必须是显式值（不缺键、不逐字等于 en）。"""
+    checked, defects = _zh_explicit_defects(i18n_loader._load_all())
+
+    assert len(checked) > 100, f"只检查了 {len(checked)} 个码 —— 覆盖不足，不计证据"
+    assert len(checked) == len(list(ErrorCode)), "枚举遍历漏了成员"
+    assert not defects, _zh_defect_message(checked, defects)
+
+
+def test_zh_missing_key_falls_back_to_english_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """★ 序号 4 的**可达性**判据：证明「zh 缺键 ⇒ **静默**回退英文」**真的会发生**。
+
+    做法（**只吃 `tmp_path` 临时副本**，真实 bundle 只读）：从 zh 的副本删掉一个 `errors.*`
+    键，把副本喂给**真的** `loader`（monkeypatch `_load_all`），然后：
+
+    ① 行为面 —— `error_message(code, "zh")` 返回**英文原文**（不抛错、不返回裸 key）：
+       这就是「静默」的字面证据；
+    ② 判据面 —— 上一条用例的判据**必须**抓到它（缺键 ⇒ 缺陷）；
+    ③ 反向 —— 真实表里该码**不**在缺陷集里（证明 ② 不是空转）。
+
+    ★ 附带效力：若有人**删掉** `loader.py` 的回退分支，① 会变成 `KeyError` ⇒ 本用例同样返红。
+    """
+    key = "errors.AGENT_NAME_TAKEN"
+    code = "AGENT_NAME_TAKEN"
+
+    # ★ 用**模块属性**取表：`from ... import _load_all` 会绑定函数对象，
+    #   monkeypatch 改 `loader._load_all` 时**不会**生效（探针实测踩到过）。
+    real = i18n_loader._load_all()
+    assert code not in _zh_explicit_defects(real)[1], "真实表里该码本应是绿的"
+
+    tampered = {
+        "en": json.loads(json.dumps(real["en"])),
+        "zh": json.loads(json.dumps(real["zh"])),
+    }
+    en_text = tampered["en"]["errors"][code]
+    del tampered["zh"]["errors"][code]
+
+    reloaded: dict[str, dict] = {}
+    for locale, table in tampered.items():
+        path = tmp_path / f"{locale}.json"
+        path.write_text(json.dumps(table, ensure_ascii=False), encoding="utf-8")
+        reloaded[locale] = json.loads(path.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr("octop.i18n.loader._load_all", lambda: reloaded)
+
+    # ① 静默回退：拿到的是**英文原文**，且**没有**抛 KeyError。
+    assert error_message(code, "zh") == en_text
+    assert error_message(code, "zh") == error_message(code, "en")
+    assert key not in flatten_keys(reloaded["zh"])
+
+    # ② 判据必须抓到（并且报的是「缺键」这一条，不是别的）。
+    _, defects = _zh_explicit_defects(reloaded)
+    assert code in defects, f"缺键没被判据抓到：{defects}"
+    assert "zh 缺键" in defects[code]
