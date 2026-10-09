@@ -33,10 +33,16 @@ HARD_IDS = ("AUD-1", "AUD-2", "AUD-S1", "AUD-S2", "AUD-S3", "AUD-S4", "AUD-S5", 
             "AUD-C1", "AUD-C2", "AUD-C3", "AUD-C4", "AUD-C5", "AUD-C6", "AUD-C7", "AUD-C8",
             "AUD-C9", "AUD-C11", "AUD-C12")
 
-# ★ `AUD-G2` 的冻结锚点（`Makefile @207` 逐字）
+# ★★ `AUD-G2` 的冻结判据 = `Makefile` 的 `all:` **必需腿序列**（★ 结构化比较 · **不是**逐字行冻结）
+#   ★ 为什么不再是逐字（`P3-23`）：`all:` 那一行会**合法地**长出新腿（`lint-frontend` 就是这么加进来的）
+#     ⇒ 逐字冻结的常量永远跟不上 ⇒ **恒红门**（一道永远红的门 = 没有门），还会淹没真回归。
+#     ★ 逐字冻结是错的工具 ⇒ 改成：断言必需腿**按序在位**（允许合法新增腿）。
+#   ★ 判据语义（`criteria/makefile_freeze.py`）：`format-all` 必须在**首位**（写后读 · 与 `AUD-C3` 同因），
+#     其余必需腿必须**按序出现**；★ 行号**不参与判定**（`all:` 行号漂移 = 合法编辑）。
 MAKEFILE_NAME = "Makefile"
-MAKEFILE_FROZEN_LINENO = 207
-MAKEFILE_FROZEN_LINE = "all: format-all lint typecheck test test-frontend"
+MAKEFILE_FROZEN_LINENO = 207  # ★ 仅 `AUD-C3` 的显示锚点；★ `AUD-G2` 已不引用它（不再冻结行号）
+MAKEFILE_ALL_REQUIRED = ("format-all", "lint", "lint-frontend", "typecheck", "test", "test-frontend")
+MAKEFILE_ALL_WRITER = MAKEFILE_ALL_REQUIRED[0]  # ★ 改树的写者 ⇒ 必须居 `all:` 依赖序列**首位**
 
 # ─── ★ `P1-2` 新增判据的**单一出处**常量（★ 判据模块一律引用本处 ⇒ 禁第二份拷贝）──────
 # ★ `AUD-C1` `dashboard` 顶层命名空间重复键的判据面（★ 逐字文件清单 · 判 `chat` 出现次数）
