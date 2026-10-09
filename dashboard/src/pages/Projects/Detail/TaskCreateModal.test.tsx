@@ -310,7 +310,7 @@ describe("TaskCreateModal（R3 / AC-U-8）", () => {
     expect(onCreated).toHaveBeenCalled();
   });
 
-  it("FIND-3/§8.1: 「切换到智能体」只写 assignee，不发派单请求", async () => {
+  it("FIND-3/§8.1: 「切换到智能体」只写双主体数组，不发派单请求", async () => {
     const { user } = await open("任务一");
     const before = createTaskMock.mock.calls.length;
 
@@ -328,8 +328,11 @@ describe("TaskCreateModal（R3 / AC-U-8）", () => {
     await user.click(submitButton());
     await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
     const body = createTaskMock.mock.calls[0][1];
-    expect(body.assignee_type).toBe("agent");
-    expect(body.assignee_id).toBe("agent-a");
+    // PLAN §B2.1b / §B2.5 (c) V3：写面只发两数组；旧单值对**同给即 422**。
+    expect(body.executors).toEqual(["agent:agent-a"]);
+    expect(body.owners).toEqual([]);
+    expect(body.assignee_type).toBeUndefined();
+    expect(body.assignee_id).toBeUndefined();
     expect(dispatchTaskMock).not.toHaveBeenCalled();
   });
 
@@ -375,6 +378,8 @@ const BASE_TASK: ProjectTask = {
   status: "planning",
   assignee_type: null,
   assignee_id: null,
+  owners: [],
+  executors: [],
   priority: 0,
   deps: [],
   thread_id: null,
@@ -401,7 +406,8 @@ function editInitialValues(overrides: Partial<TaskCreateValues> = {}) {
     description: "原描述",
     status: "planning" as const,
     priority: 0,
-    assignee: null,
+    owners: [],
+    executors: [],
     tag_ids: [],
     start_at: null,
     due_at: null,
@@ -478,7 +484,7 @@ describe("TaskCreateModal（F4 编辑模式）", () => {
         description: "改后的描述",
         priority: 3,
         status: "doing",
-        assignee: { type: "agent", id: "agent-a" },
+        executors: ["agent:agent-a"],
         tag_ids: ["tag_1"],
         start_at: 1_750_000_000,
         due_at: 1_750_600_000,
@@ -730,7 +736,7 @@ describe("TaskCreateModal（F4 编辑模式）", () => {
       expected: { status: "todo" },
     },
     {
-      field: "assignee",
+      field: "executors",
       change: async (user: UserEvent) => {
         await user.click(
           screen.getByRole("button", { name: "projects.chipAssignee" }),
@@ -739,7 +745,7 @@ describe("TaskCreateModal（F4 编辑模式）", () => {
           await screen.findByRole("button", { name: "agent:agent-a" }),
         );
       },
-      expected: { assignee_type: "agent", assignee_id: "agent-a" },
+      expected: { executors: ["agent:agent-a"] },
     },
     {
       field: "tags",

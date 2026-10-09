@@ -56,15 +56,17 @@ const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
 const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
 
-interface Assignee {
-  type: string;
-  id: string;
-}
-
 /**
  * The dialog's value shape — the **single** field definition shared by both
  * modes (PLAN §5.1 / FIND-10). ``start_at`` / ``due_at`` are unix seconds (the
  * API's unit), so a caller can hand a ``ProjectTask`` straight over.
+ *
+ * ``owners`` / ``executors`` are the frozen two-subject write shape (PLAN
+ * §B2.1b): ``owners`` holds ``users.id`` numbers, ``executors`` holds
+ * ``agent:<id>`` / ``team:<role>`` strings. The dialog's own value shape uses
+ * **ordered arrays** like the API, so ``taskToValues()`` can hand a
+ * ``ProjectTask`` straight over and the submit path can diff two sets without
+ * an intermediate conversion.
  */
 export interface TaskCreateValues {
   /** The task being edited — edit mode needs it for the parent cycle guard. */
@@ -73,7 +75,8 @@ export interface TaskCreateValues {
   description: string;
   status: ProjectTaskStatus;
   priority: number;
-  assignee: Assignee | null;
+  owners: number[];
+  executors: string[];
   tag_ids: string[];
   start_at: number | null;
   due_at: number | null;
@@ -89,6 +92,13 @@ export interface TaskCreateValues {
  * ``tags`` / ``deps`` / ``custom_fields`` are **full replacements** (PLAN §5.2):
  * the submitted array / object *is* the final set, an empty one clears it, and
  * an absent key leaves it untouched (the route uses ``exclude_unset``).
+ *
+ * ``owners`` / ``executors`` follow the frozen **three states** (PLAN §B2.5 (a),
+ * verbatim against ``TaskPatch``): absent = leave that side alone, ``[]`` =
+ * clear it, non-empty = replace the whole set. They replace the withdrawn
+ * single-valued ``assignee_type`` / ``assignee_id`` pair, which the backend
+ * refuses with a 422 when a request carries both encodings (V3) — so the old
+ * pair must never be sent again.
  */
 export type TaskPatchValues = Pick<
   ProjectTaskUpdateBody,
@@ -99,8 +109,8 @@ export type TaskPatchValues = Pick<
   | "start_at"
   | "due_at"
   | "status"
-  | "assignee_type"
-  | "assignee_id"
+  | "owners"
+  | "executors"
   | "parent_id"
   | "tags"
   | "custom_fields"
@@ -129,6 +139,36 @@ function toEpochSeconds(value: Dayjs | null): number | null {
 const memberLabel = (member: ProjectMember) =>
   `${member.subject_type}:${member.subject_id}`;
 
+/**
+ * A **user** member's ``users.id`` — the only value ``owners`` carries (PLAN
+ * §B2.1b). The member row stores that id as text in ``subject_id`` (the owner is
+ * added with ``subject_id=str(user.id)``), and ``user_id`` is the same integer
+ * when the row resolved one; either source is the frozen integer, so this reads
+ * whichever the row carries and never invents an id. A user row with neither
+ * (an unresolved legacy row) has no owner id to send ⇒ ``null``.
+ */
+function memberOwnerId(member: ProjectMember): number | null {
+  if (member.subject_type !== "user") return null;
+  if (typeof member.user_id === "number") return member.user_id;
+  const parsed = Number(member.subject_id);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** ``owners`` / ``executors`` order-insensitively equal (the API is set-valued). */
+function sameNumbers(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort((x, y) => x - y);
+  const sortedB = [...b].sort((x, y) => x - y);
+  return sortedA.every((value, index) => value === sortedB[index]);
+}
+
+function sameStrings(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((value, index) => value === sortedB[index]);
+}
+
 /** Edit-mode baseline: the same shape as the form, from ``initialValues``. */
 function toValues(
   source: Partial<TaskCreateValues> | undefined,
@@ -139,7 +179,8 @@ function toValues(
     description: source?.description ?? "",
     status: source?.status ?? "planning",
     priority: source?.priority ?? 0,
-    assignee: source?.assignee ?? null,
+    owners: source?.owners ?? [],
+    executors: source?.executors ?? [],
     tag_ids: source?.tag_ids ?? [],
     start_at: source?.start_at ?? null,
     due_at: source?.due_at ?? null,
@@ -231,7 +272,8 @@ export default function TaskCreateModal({
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<ProjectTaskStatus>("planning");
   const [priority, setPriority] = useState(0);
-  const [assignee, setAssignee] = useState<Assignee | null>(null);
+  const [owners, setOwners] = useState<number[]>([]);
+  const [executors, setExecutors] = useState<string[]>([]);
   const [tagIds, setTagIds] = useState<string[]>([]);
   const [startAt, setStartAt] = useState<Dayjs | null>(null);
   const [dueAt, setDueAt] = useState<Dayjs | null>(null);
@@ -315,7 +357,8 @@ export default function TaskCreateModal({
     setDescription("");
     setStatus("planning");
     setPriority(0);
-    setAssignee(null);
+    setOwners([]);
+    setExecutors([]);
     setTagIds([]);
     setStartAt(null);
     setDueAt(null);
@@ -336,7 +379,8 @@ export default function TaskCreateModal({
     setDescription(seeded.description);
     setStatus(seeded.status);
     setPriority(seeded.priority);
-    setAssignee(seeded.assignee);
+    setOwners(seeded.owners);
+    setExecutors(seeded.executors);
     setTagIds(seeded.tag_ids);
     setStartAt(seeded.start_at ? dayjs(seeded.start_at * 1000) : null);
     setDueAt(seeded.due_at ? dayjs(seeded.due_at * 1000) : null);
@@ -405,13 +449,13 @@ export default function TaskCreateModal({
     if (!sameCustomFields(customValues, baseline.custom_fields)) {
       patch.custom_fields = customValues;
     }
-    const baselineAssignee = baseline.assignee;
-    const assigneeChanged =
-      (assignee?.type ?? null) !== (baselineAssignee?.type ?? null) ||
-      (assignee?.id ?? null) !== (baselineAssignee?.id ?? null);
-    if (assigneeChanged) {
-      patch.assignee_type = assignee?.type ?? null;
-      patch.assignee_id = assignee?.id ?? null;
+    // Two-subject three states (PLAN §B2.5 (a)): a side the user did not touch is
+    // **absent** (leave it alone); a side whose final set differs is sent whole —
+    // ``[]`` clears it, a non-empty array replaces it. Comparing sets rather than
+    // tracking a dirty flag is what makes "did not touch" exact.
+    if (!sameNumbers(owners, baseline.owners)) patch.owners = owners;
+    if (!sameStrings(executors, baseline.executors)) {
+      patch.executors = executors;
     }
     return patch;
   };
@@ -453,8 +497,13 @@ export default function TaskCreateModal({
         description: description.trim() || undefined,
         status,
         priority,
-        assignee_type: assignee?.type ?? null,
-        assignee_id: assignee?.id ?? null,
+        // The frozen two-subject write shape (PLAN §B2.1b): ``owners`` are
+        // ``users.id`` numbers, ``executors`` are ``agent:<id>`` / ``team:<role>``
+        // strings. The withdrawn single-valued ``assignee_type`` / ``assignee_id``
+        // pair is deliberately **not** sent — the backend refuses a request that
+        // carries both encodings (V3, 422).
+        owners,
+        executors,
         due_at: toEpochSeconds(dueAt),
         start_at: toEpochSeconds(startAt),
         parent_id: parentId,
@@ -555,7 +604,11 @@ export default function TaskCreateModal({
       return value !== undefined && value !== null && value !== "";
     }).length;
   const statusSummary = t(STATUS_LABEL_KEYS[status]);
-  const assigneeSummary = assignee ? `${assignee.type}:${assignee.id}` : null;
+  /** 汇总 = 「N 用户 + M 执行主体」（PLAN §B2.1b 的双主体读法）。 */
+  const assigneeSummary =
+    owners.length + executors.length > 0
+      ? [...owners.map((id) => `user:${id}`), ...executors].join("、")
+      : null;
   const tagSummary =
     tagIds.length > 0
       ? tags
@@ -608,6 +661,15 @@ export default function TaskCreateModal({
     </div>
   );
 
+  /**
+   * One row per member; clicking toggles that member in **its own side** of the
+   * two-subject shape (PLAN §B2.1b): a ``user`` row joins ``owners`` as a
+   * ``users.id`` number, an ``agent`` / ``team`` row joins ``executors`` as an
+   * ``agent:<id>`` / ``team:<role>`` string. The click is **additive** (a second
+   * click removes), which is what lets one dialog carry 1..N owners *and* 1..M
+   * executors at once — the alternative, a single replace-on-click slot, can
+   * never produce both sides and would make the frozen write shape unreachable.
+   */
   const renderAssigneePicker = () => {
     if (membersLoading) {
       return (
@@ -625,9 +687,13 @@ export default function TaskCreateModal({
       <div className={styles.optionList}>
         {members.map((member) => {
           const value = memberLabel(member);
+          const ownerId = memberOwnerId(member);
+          const executorRef =
+            member.subject_type === "user" ? null : memberLabel(member);
           const active =
-            assignee?.type === member.subject_type &&
-            assignee?.id === member.subject_id;
+            ownerId !== null
+              ? owners.includes(ownerId)
+              : executorRef !== null && executors.includes(executorRef);
           return (
             <button
               key={value}
@@ -635,13 +701,23 @@ export default function TaskCreateModal({
               className={`${styles.option} ${
                 active ? styles.optionActive : ""
               }`}
-              onClick={() =>
-                setAssignee(
-                  active
-                    ? null
-                    : { type: member.subject_type, id: member.subject_id },
-                )
-              }
+              onClick={() => {
+                if (ownerId !== null) {
+                  setOwners((current) =>
+                    active
+                      ? current.filter((id) => id !== ownerId)
+                      : [...current, ownerId],
+                  );
+                  return;
+                }
+                if (executorRef !== null) {
+                  setExecutors((current) =>
+                    active
+                      ? current.filter((ref) => ref !== executorRef)
+                      : [...current, executorRef],
+                  );
+                }
+              }}
             >
               <span>{value}</span>
               {active ? <Check size={14} /> : null}
@@ -828,28 +904,36 @@ export default function TaskCreateModal({
     }
     return (
       <div className={styles.optionList}>
-        {agentMembers.map((member) => (
-          <button
-            key={memberLabel(member)}
-            type="button"
-            className={styles.option}
-            onClick={() => {
-              // PLAN §8.1: the dialog only writes `assignee` — dispatch stays an
-              // explicit task-card action, because the task does not exist yet.
-              setAssignee({
-                type: member.subject_type,
-                id: member.subject_id,
-              });
-            }}
-          >
-            {member.subject_type === "team" ? (
-              <Users size={14} />
-            ) : (
-              <User size={14} />
-            )}
-            <span>{memberLabel(member)}</span>
-          </button>
-        ))}
+        {agentMembers.map((member) => {
+          const ref = memberLabel(member);
+          const active = executors.includes(ref);
+          return (
+            <button
+              key={ref}
+              type="button"
+              className={`${styles.option} ${
+                active ? styles.optionActive : ""
+              }`}
+              onClick={() => {
+                // PLAN §8.1: the dialog only writes the subject — dispatch stays
+                // an explicit task-card action, because the task does not exist
+                // yet. Additive like the chip above, so N executors are reachable.
+                setExecutors((current) =>
+                  active
+                    ? current.filter((item) => item !== ref)
+                    : [...current, ref],
+                );
+              }}
+            >
+              {member.subject_type === "team" ? (
+                <Users size={14} />
+              ) : (
+                <User size={14} />
+              )}
+              <span>{ref}</span>
+            </button>
+          );
+        })}
       </div>
     );
   };
@@ -1007,12 +1091,7 @@ export default function TaskCreateModal({
               <ChipButton
                 icon={<User size={14} />}
                 label={t("projects.switchToAgent")}
-                value={
-                  assignee &&
-                  (assignee.type === "agent" || assignee.type === "team")
-                    ? `${assignee.type}:${assignee.id}`
-                    : null
-                }
+                value={executors.length > 0 ? executors.join("、") : null}
                 disabled={agentMembers.length === 0}
                 ariaLabel={t("projects.switchToAgent")}
               >

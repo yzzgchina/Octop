@@ -70,10 +70,11 @@ function taskToValues(task: ProjectTask): TaskCreateValues {
     description: task.description,
     status: task.status,
     priority: task.priority,
-    assignee:
-      task.assignee_type && task.assignee_id
-        ? { type: task.assignee_type, id: task.assignee_id }
-        : null,
+    // 双主体回填（PLAN §B2.1b）：`TaskOut.owners` / `executors` 恒为数组，直接透传。
+    // 与 `Detail/index.tsx` 的同名适配器**同款**；★ 本文件归 `P2-5`，此处仅为
+    // 「移除已废止的单值 `assignee`」所必需的机械对齐（`tsc -b` 强制的编译错误）。
+    owners: task.owners ?? [],
+    executors: task.executors ?? [],
     tag_ids: (task.tags ?? []).map((tag) => tag.tag_id),
     start_at: task.start_at,
     due_at: task.due_at,

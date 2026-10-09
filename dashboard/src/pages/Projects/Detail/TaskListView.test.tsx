@@ -107,6 +107,8 @@ function task(overrides: Partial<ProjectTask> = {}): ProjectTask {
     status: "todo",
     assignee_type: null,
     assignee_id: null,
+    owners: [],
+    executors: [],
     priority: 1,
     deps: [],
     thread_id: null,

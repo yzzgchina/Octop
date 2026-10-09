@@ -113,6 +113,8 @@ function task(task_id: string, title: string) {
     status: "todo" as const,
     assignee_type: null,
     assignee_id: null,
+    owners: [],
+    executors: [],
     priority: 0,
     deps: [],
     thread_id: null,

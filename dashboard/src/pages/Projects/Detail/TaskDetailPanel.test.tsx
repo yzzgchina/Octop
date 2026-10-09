@@ -41,6 +41,8 @@ function task(overrides: Partial<ProjectTask> = {}): ProjectTask {
     status: "doing",
     assignee_type: "agent",
     assignee_id: "agent01",
+    owners: [],
+    executors: [],
     priority: 3,
     deps: [],
     thread_id: null,

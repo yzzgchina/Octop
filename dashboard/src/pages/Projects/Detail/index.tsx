@@ -130,10 +130,11 @@ function taskToValues(task: ProjectTask): TaskCreateValues {
     description: task.description,
     status: task.status,
     priority: task.priority,
-    assignee:
-      task.assignee_type && task.assignee_id
-        ? { type: task.assignee_type, id: task.assignee_id }
-        : null,
+    // 双主体回填（PLAN §B2.1b）：`TaskOut.owners` / `executors` **恒为数组**
+    // （§B2.5 (a)：绝不返回 null）⇒ 直接透传，不做 `?? []`。二者与派生的单值镜像
+    // `assignee_type` / `assignee_id` 并存，但**写入**只走这两个数组（V3 互斥）。
+    owners: task.owners ?? [],
+    executors: task.executors ?? [],
     tag_ids: (task.tags ?? []).map((tag) => tag.tag_id),
     start_at: task.start_at,
     due_at: task.due_at,
