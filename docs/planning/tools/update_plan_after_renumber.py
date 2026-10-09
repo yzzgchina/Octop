@@ -5,6 +5,9 @@ Only unambiguous references are rewritten. A few lines (the pre-flight checks
 "shed 018 must be free") are historical now and are left alone, because
 rewriting them would turn a correct past instruction into a wrong present one.
 The appended status section explains what actually happened.
+
+附录 H (the appended status section) is history and is never rewritten: it quotes
+the pre-renumber identifiers on purpose, so rewriting it would falsify the record.
 """
 from __future__ import annotations
 
@@ -21,7 +24,8 @@ PLAN = Path(
     or Path(__file__).resolve().parents[1] / "Octop-总计划与落地开发计划.md"
 )
 
-# (pattern, replacement) applied globally — each is unambiguous.
+# (pattern, replacement) applied to the plan body only — each is unambiguous.
+# Never applied to 附录 H, which is a historical record (see _split_appendix).
 REWRITES: list[tuple[str, str]] = [
     ("018_projects", "019_projects"),
     ("test_migration_018", "test_migration_019"),
@@ -31,6 +35,18 @@ REWRITES: list[tuple[str, str]] = [
     ("Migration 018", "Migration 019"),
     ("v18 迁移", "v19 迁移"),
     ("M2 迁移 019（或并入 018，视 M1 是否已发版）", "M2 迁移 020（019 已被 M1 占用并随本分支提交）"),
+]
+
+# 附录 H starts at this heading and runs to EOF. Everything from here on is history.
+APPENDIX_MARKER = "# 附录 H：执行实况"
+
+# Original wording inside 附录 H. These must still be present verbatim afterwards; if one
+# disappeared, a rewrite reached the appendix. Fragments, not a bare `018_projects` count:
+# a count would still be satisfied by the surviving sibling reference if only one got
+# rewritten (the bug this guards against rewrote exactly the H.2 line).
+APPENDIX_HISTORICAL_FRAGMENTS: list[str] = [
+    "计划写的是 `018_projects`",
+    "`018_projects.{sql,pg.sql}` → `019_projects.{sql,pg.sql}`",
 ]
 
 STATUS = """
@@ -105,30 +121,54 @@ upstream/develop  9a13f53f
 """
 
 
+def _split_appendix(text: str) -> tuple[str, str]:
+    """Split into (body, appendix); appendix starts at the 附录 H heading (empty if absent).
+
+    附录 H is a historical record that quotes the pre-renumber identifiers on purpose, so
+    REWRITES must only ever see the body. Splitting on the heading — rather than on the
+    bare title text — keeps the whole appended section, separator and heading included,
+    out of the rewrite pass.
+    """
+    idx = text.find(APPENDIX_MARKER)
+    if idx < 0:
+        return text, ""
+    return text[:idx], text[idx:]
+
+
 def main() -> int:
     text = PLAN.read_text(encoding="utf-8")
+    body, appendix = _split_appendix(text)
+
     for old, new in REWRITES:
-        n = text.count(old)
+        n = body.count(old)
         if n:
-            text = text.replace(old, new)
+            body = body.replace(old, new)
             print(f"  {n:>3}x  {old!r} -> {new!r}")
 
     # Count here, before 附录 H is generated: the appendix is a historical record that
     # quotes `018_projects` on purpose, so its references are not ones that should have
     # been rewritten. Measuring the appended text counted the appendix against itself.
-    left = text.count("018_projects") + text.count("test_migration_018")
+    left = body.count("018_projects") + body.count("test_migration_018")
 
-    if "附录 H：执行实况" in text:
+    if appendix:
         print("  status section already present; not appending again")
+        text = body + appendix
     else:
-        text = text.rstrip() + "\n" + STATUS
+        text = body.rstrip() + "\n" + STATUS
+        appendix = STATUS
         print("  appended 附录 H：执行实况")
+
+    tampered = [f for f in APPENDIX_HISTORICAL_FRAGMENTS if f not in appendix]
 
     PLAN.write_text(text, encoding="utf-8", newline="")
 
+    for fragment in tampered:
+        print(f"ERROR: 附录 H historical reference missing or altered: {fragment!r}")
+
     print(f"\nremaining stale identifiers: {left}")
+    print(f"appendix H historical references intact: {not tampered}")
     print(f"remaining '018' occurrences: {text.count('018')} (historical references only)")
-    return 0 if left == 0 else 1
+    return 0 if left == 0 and not tampered else 1
 
 
 if __name__ == "__main__":
