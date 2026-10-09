@@ -1,9 +1,58 @@
 # Makefile for Octop
 # Usage:
-#   make              - Show this help
-#   make all          - format (BE+FE) + backend lint + typecheck + test (ship bar)
-#   make build        - Build frontend + Python wheel
-#   make publish      - Build + upload to PyPI
+#   make help               - Show this help (default goal)
+#
+# Ship bar / release:
+#   make all                - format-all + lint + lint-frontend + typecheck + test + test-frontend (ship bar)
+#   make build              - Build frontend + Python wheel
+#   make publish            - Build + upload to PyPI
+#   make build-frontend     - npm ci + npm run build -> src/octop/dashboard
+#   make build-wheel        - Build Python wheel + sdist (frontend must already be built)
+#   make publish-test       - Build + upload to TestPyPI (make publish PYPI_REPO=testpypi)
+#
+# Gate targets:
+#   make precommit          - format-all + lint + lint-frontend + typecheck + test-affected + test-frontend (git hook gate)
+#   make test-affected      - pytest --testmon; prints cold-start vs baseline, cold start runs the full backend suite once
+#   make audit              - read-only tree-discipline audit (scripts/audit/current_tree.py); standalone, NOT in all / check-all / CI
+#   make check-all          - lint-all + typecheck-all + test + test-frontend
+#
+# Quality (backend):
+#   make lint               - ruff check + ruff format --check (src, tests)
+#   make format             - ruff check --fix + ruff format (src, tests)
+#   make typecheck          - mypy src/octop (strict via [tool.mypy] in pyproject.toml)
+#   make test               - pytest -n PYTEST_JOBS -m "not live"
+#   make test-fast          - pytest -n PYTEST_JOBS -m "not live and not slow"
+#   make test-live          - pytest -m live
+#
+# Quality (frontend):
+#   make lint-frontend      - npm run lint (ESLint) + npm run format:check (Prettier check)
+#   make format-frontend    - npm run format (Prettier write)
+#   make typecheck-frontend - npx tsc -b
+#   make test-frontend      - npx vitest run + scripts/vitest-fail-classify.py (exit 1/2/3 = failure)
+#
+# Quality (full stack):
+#   make lint-all           - lint + lint-frontend
+#   make format-all         - format + format-frontend (first leg of make all)
+#   make typecheck-all      - typecheck + typecheck-frontend
+#
+# Development:
+#   make dev                - dashboard dev server + octop run together
+#   make dev-frontend       - Vite dev server only
+#   make dev-backend        - octop run only
+#
+# Online-deps (.venv-online = local Octop source + harness-* from PyPI):
+#   make install-online     - Create .venv-online (octop editable + harness-* from PyPI)
+#   make test-online        - pytest -m "not live" against .venv-online
+#   make run-online         - octop run from .venv-online
+#
+# Utilities:
+#   make install-hooks      - Point git at .githooks (pre-commit runs make precommit + dashboard build)
+#   make install            - Install Python dev dependencies (uv sync / pip install -e ".[dev]")
+#   make install-dev        - Same rule as install
+#   make install-tools      - Install build + twine for publishing
+#   make clean              - Remove build artifacts and caches
+#   make clean-online       - Remove the .venv-online environment
+#   make version            - Print the project version from pyproject.toml
 #
 # Prerequisites:
 #   - Node.js + npm   (frontend)
