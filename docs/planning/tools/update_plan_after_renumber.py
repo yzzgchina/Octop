@@ -113,6 +113,11 @@ def main() -> int:
             text = text.replace(old, new)
             print(f"  {n:>3}x  {old!r} -> {new!r}")
 
+    # Count here, before 附录 H is generated: the appendix is a historical record that
+    # quotes `018_projects` on purpose, so its references are not ones that should have
+    # been rewritten. Measuring the appended text counted the appendix against itself.
+    left = text.count("018_projects") + text.count("test_migration_018")
+
     if "附录 H：执行实况" in text:
         print("  status section already present; not appending again")
     else:
@@ -121,7 +126,6 @@ def main() -> int:
 
     PLAN.write_text(text, encoding="utf-8", newline="")
 
-    left = text.count("018_projects") + text.count("test_migration_018")
     print(f"\nremaining stale identifiers: {left}")
     print(f"remaining '018' occurrences: {text.count('018')} (historical references only)")
     return 0 if left == 0 else 1
