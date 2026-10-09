@@ -49,13 +49,14 @@
 #   make install-hooks      - Point git at .githooks (pre-commit runs make precommit + dashboard build)
 #   make install            - Install Python dev dependencies (uv sync / pip install -e ".[dev]")
 #   make install-dev        - Same rule as install
+#   make install-frontend   - Install dashboard npm dependencies (npm ci; required by the frontend legs)
 #   make install-tools      - Install build + twine for publishing
 #   make clean              - Remove build artifacts and caches
 #   make clean-online       - Remove the .venv-online environment
 #   make version            - Print the project version from pyproject.toml
 #
 # Prerequisites:
-#   - Node.js + npm   (frontend)
+#   - Node.js + npm   (frontend; run `make install-frontend` once per clone)
 #   - Python 3.12+    (backend)
 #   - uv              (recommended) or pip
 #   - twine           (publish: pip install twine / make install-tools)
@@ -114,27 +115,28 @@ help:
 	@echo "  run-online       Start octop run from .venv-online"
 	@echo ""
 	@echo "Quality targets (ship bar):"
-	@echo "  all              format-all + lint + typecheck + test (backend lint/typecheck/test)"
-	@echo "  precommit        fast change-aware gate for the git pre-commit hook (testmon-scoped tests)"
+	@echo "  all              format-all + lint + lint-frontend + typecheck + test + test-frontend (six legs · ship bar)"
+	@echo "  precommit        format-all + lint + lint-frontend + typecheck + test-affected + test-frontend (git pre-commit hook gate)"
 	@echo "  lint             Ruff check + format check (src, tests)"
 	@echo "  format           Ruff auto-fix + format (src, tests)"
 	@echo "  typecheck        mypy --strict src/octop"
-	@echo "  test             pytest -m \"not live\""
+	@echo "  test             pytest -n PYTEST_JOBS -m \"not live\""
 	@echo "  test-live        pytest -m live"
 	@echo ""
 	@echo "Quality targets (frontend):"
 	@echo "  lint-frontend    ESLint + Prettier check"
-	@echo "  format-frontend  Prettier write"
+	@echo "  format-frontend  Prettier --write (dashboard only)"
 	@echo "  typecheck-frontend  tsc -b (project references)"
 	@echo ""
 	@echo "Quality targets (full stack):"
 	@echo "  lint-all         lint + lint-frontend"
 	@echo "  format-all       format + format-frontend (also first step of make all)"
 	@echo "  typecheck-all    typecheck + typecheck-frontend"
-	@echo "  check-all        lint-all + typecheck-all + test"
+	@echo "  check-all        lint-all + typecheck-all + test + test-frontend"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  install-hooks    Point git to .githooks (pre-commit: make precommit + dashboard build)"
+	@echo "  install-frontend Install dashboard npm dependencies (npm ci; required by prettier/eslint/vitest)"
 	@echo "  install          Install Python dev dependencies (alias: install-dev)"
 	@echo "  install-dev      uv sync / pip install -e \".[dev]\""
 	@echo "  install-tools    Install build + twine for publishing"
@@ -378,12 +380,24 @@ check-all: lint-all typecheck-all test test-frontend
 
 # ─── Utilities ───────────────────────────────────────────────────────────────
 
+.PHONY: install-frontend
+# ★ `P3-18`：前端先决条件。干净检出上 `dashboard/node_modules` 不存在 ⇒
+#   `format-frontend` / `lint-frontend` / `test-frontend` 一跑就 `prettier: command not found`
+#   （exit 127），而 `make all` 的第一条腿正是 `format-all` ⇒ 照 §6 走的新人首跑必挂。
+# ★ 本目标就是那道缺的前置：`npm ci`（按 `package-lock.json` 可复现安装）。
+# ★ 与 `build-frontend` 内联的 `npm ci` **职责重叠但都不动** —— 本目标**不**接进
+#   `all:` / `precommit:`（改依赖图 = 改门禁语义，超出本卡；由 `make all` 的腿自己报缺）。
+install-frontend:
+	@echo "[install-frontend] Installing dashboard dependencies (npm ci)..."
+	cd $(DASHBOARD_DIR) && npm ci
+	@echo "[install-frontend] Done."
+
 .PHONY: install-hooks
 install-hooks:
 	@echo "[install-hooks] Setting core.hooksPath=.githooks"
 	git config core.hooksPath .githooks
 	@chmod +x "$(REPO_ROOT)/.githooks/"* 2>/dev/null || true
-	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + typecheck + testmon-scoped tests), dashboard build"
+	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + lint-frontend + typecheck + testmon-scoped tests + test-frontend), dashboard build"
 	@echo "[install-hooks] Bypass: SKIP_PRECOMMIT=1 git commit …   or   git commit --no-verify"
 
 .PHONY: install install-dev

@@ -185,6 +185,7 @@ Frontend talks to Octop **only** via `/api` HTTP — never import or assume Pyth
 
 ```bash
 make install-hooks                      # once per clone: enable .githooks pre-commit
+make install-frontend                   # once per clone: dashboard npm deps (npm ci) — required by every frontend leg
 make all                                # format-all + lint + lint-frontend + typecheck + test + test-frontend (ship bar)
 make format-all                         # backend Ruff + dashboard Prettier write
 make lint                               # ruff check + format check
@@ -199,6 +200,8 @@ make build-frontend                     # dashboard/ → src/octop/dashboard/
 ```
 
 **Git hooks (required for local commits):** after cloning, run **`make install-hooks`** once. That sets `core.hooksPath=.githooks` so every `git commit` runs **`make precommit`** (which first runs **`format-all`**: backend Ruff + dashboard Prettier write, then `lint` / `lint-frontend` / `typecheck` / **testmon-scoped** `test-affected`) and dashboard **`npm run build`**. The unscoped **`make all`** (`format-all` + `lint` + `lint-frontend` + `typecheck` + `test` + `test-frontend`, six legs — see `Makefile` `all:`) is the **CI / ship bar**, not what the hook runs. Formatted files that were already staged are re-added so the commit includes the formatted content. Bypass only in emergencies: `SKIP_PRECOMMIT=1 git commit …` or `git commit --no-verify`. Do **not** skip hooks to land red tests — fix the suite first (CI runs on Linux **and** Windows).
+
+**Frontend prerequisite:** run **`make install-frontend`** (npm ci) once per clone. Without `dashboard/node_modules` the first leg (`format-all` → `format-frontend` → `prettier`) fails with `prettier: command not found` (exit 127), so a fresh clone cannot reach `make all` by following §6 alone.
 
 ## 7. Key patterns
 
