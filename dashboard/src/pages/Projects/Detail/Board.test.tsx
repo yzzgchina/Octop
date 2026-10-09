@@ -178,6 +178,7 @@ function task(overrides: Partial<ProjectTask> = {}): ProjectTask {
     status: "todo",
     assignee_type: null,
     assignee_id: null,
+    task_number: null,
     owners: [],
     executors: [],
     priority: 1,
@@ -796,20 +797,64 @@ describe("Board 卡片 testid（AC-01a/b/c 正 · AC-01d 显式未满足）", ()
     expect(screen.queryByTestId("task-card-agent-badge")).toBeNull();
   });
 
-  // 未满足 · 等编号批次（编号按实施分支实测取号，禁止写死任何号）：
-  // `ProjectTask` 没有编号字段 ⇒ 编号位整块不渲染（不留空位、不用 task_id 顶替）。
-  it("AC-01d/B-08 未满足 · 等编号批次（编号按实施分支实测取号）: task-card-number 不渲染", () => {
-    renderBoard([task({ assignee_type: "agent", assignee_id: "agent-a" })]);
+  // ★ P2-4 重指向（登记见 EVIDENCE-P2-4.md §重指向）：原断言「编号批次落地前
+  // `task-card-number` 必须缺席」钉的是**改造前的旧行为**（编号批次现已落地）。
+  // 现按 `SPEC.md · AC-16`（两向）+ `B-05` / `B-06`（缺失/形态不符 ⇒ 整块不渲染）改写：
+  // ① 正向、② 负向（缺 + 畸形）、③ 判别性对照（注入同 testid ⇒ 同一查询非空）。
+  it("AC-16 ①/B-05: task_number 命中冻结形态 ⇒ `task-card-number` 存在且文本逐字等于编号", () => {
+    renderBoard([
+      task({
+        task_number: "APOLLO-002",
+        assignee_type: "agent",
+        assignee_id: "agent-a",
+      }),
+    ]);
 
-    // ① 同一次 render 的正向对照：卡片确实渲染了（防「整卡不渲染也能绿」）。
+    // 同一次 render 的正向对照：卡片其余 testid 也在（防「整卡不渲染也能绿」）。
     expect(screen.getByTestId("task-card-priority")).toBeInTheDocument();
     expect(screen.getByTestId("task-card-assignee-avatar")).toBeInTheDocument();
+    expect(screen.getByTestId("task-card-number")).toHaveTextContent(
+      "APOLLO-002",
+    );
+    // 编号位承载节点**逐字**是后端给出的编号（不复用 `task_id`、不加前后缀）。
+    expect(screen.getByTestId("task-card-number").textContent).toBe(
+      "APOLLO-002",
+    );
+    // `cardAriaLabel(title, taskNumber)` 的既有签名不改（PLAN §B2.4）。
+    expect(
+      screen.getByRole("button", { name: "APOLLO-002 · Task one" }),
+    ).toBeInTheDocument();
+  });
 
-    // ② 显式未满足（不是静默）：编号批次落地前该 testid 必须缺席。
+  it.each([
+    { label: "缺失（null）", value: null },
+    { label: "缺失（undefined）", value: undefined },
+    { label: "空串", value: "" },
+    { label: "位数不足 PRJ-1", value: "PRJ-1" },
+    { label: "全小写 pace-001", value: "pace-001" },
+    { label: "前缀超长 ABCDEFGHI-001", value: "ABCDEFGHI-001" },
+    { label: "前缀以数字开头 1ACE-001", value: "1ACE-001" },
+    { label: "5 位序号 PACE-00001", value: "PACE-00001" },
+    { label: "分隔符错 PACE_001", value: "PACE_001" },
+    { label: "前缀带空格 PACE -001", value: "PACE -001" },
+  ])(
+    "AC-16 ②/B-05/B-06/B-16: task_number $label ⇒ 编号位整块不渲染（不用 task_id 顶替）",
+    ({ value }) => {
+      renderBoard([task({ task_number: value as string | null })]);
+      expect(screen.queryByTestId("task-card-number")).toBeNull();
+      // 同一次 render 的正向对照（防「整卡不渲染」蒙绿）。
+      expect(screen.getByTestId("task-card-priority")).toBeInTheDocument();
+    },
+  );
+
+  it("AC-16 ②/B-05 判别性对照: 同一次 render 临时注入同名节点 ⇒ 同一查询必须非空", () => {
+    renderBoard([task({ assignee_type: "agent", assignee_id: "agent-a" })]);
+
+    // ② 先证「确实缺席」。
     expect(screen.queryByTestId("task-card-number")).toBeNull();
 
     // ③ 判别性对照：临时插入同名节点（只在本用例内构造，不得落进实现）
-    //    ⇒ 同一查询必须非空，证明 ② 的 null 不是恒真。字面量取自 SPEC · AC-01d。
+    //    ⇒ 同一查询必须非空，证明 ② 的 null 不是恒真。字面量取自 SPEC · AC-16。
     const probe = document.createElement("span");
     probe.setAttribute("data-testid", "task-card-number");
     probe.textContent = "PRJ-001";
@@ -863,6 +908,230 @@ describe("Board 卡片 testid（AC-01a/b/c 正 · AC-01d 显式未满足）", ()
     const reported = emptyShellNodes(root);
     expect(reported.length).toBe(1);
     expect(reported[0]).toBe(probe);
+  });
+});
+
+/**
+ * P2-4（`C2-CARD`）行④**主体位多值**：`N` 用户 + `M` 执行主体。
+ *
+ * 契约来源：`PLAN.md` §B2.1b（`owners: number[]` / `executors: string[]`）+ UI-SPEC §8.3
+ * （`[人·头像组] → [执行主体·头像组] + [名字]`，每侧**前 2 + `+N``**、`→` 仅两侧都有值
+ * 时渲染、合计 = 1 时与改造前**逐字一致**）。★ 与 `PLAN.md` §CD「两侧合计前 2 + `+N`」
+ * 的差异与处置登记在 `team/2026-10-08-110000/EVIDENCE-P2-4.md`。
+ */
+describe("P2-4 行④ 主体位多值（N 用户 + M 执行主体 · → 箭头）", () => {
+  beforeEach(() => {
+    resetListMembers();
+  });
+
+  /** 某张卡的「主体位」容器（`.cardOwnerAgent`）。多主体时 `getByTestId` 会命中多枚头像。 */
+  function subjectBlockOf(title: string): HTMLElement {
+    const block = cardRootOf(title).querySelector<HTMLElement>(
+      `.${styles.cardOwnerAgent}`,
+    );
+    if (block === null) throw new Error(`subject block not found: ${title}`);
+    return block;
+  }
+
+  function subjectBlockOrNull(title: string): HTMLElement | null {
+    return cardRootOf(title).querySelector<HTMLElement>(
+      `.${styles.cardOwnerAgent}`,
+    );
+  }
+
+  /** 主体位内的头像节点（**文档顺序** = `owners` 在前、`executors` 在后）。 */
+  function avatarsOf(title: string): HTMLElement[] {
+    return Array.from(
+      subjectBlockOrNull(title)?.querySelectorAll<HTMLElement>(
+        '[data-testid="task-card-assignee-avatar"]',
+      ) ?? [],
+    );
+  }
+
+  const arrowOf = (title: string): Element | null =>
+    subjectBlockOrNull(title)?.querySelector("svg.lucide-arrow-right") ?? null;
+
+  const badgeOf = (title: string): Element | null =>
+    subjectBlockOrNull(title)?.querySelector(
+      '[data-testid="task-card-agent-badge"]',
+    ) ?? null;
+
+  const moreOf = (
+    title: string,
+    side: "owner" | "executor",
+  ): HTMLElement | null =>
+    subjectBlockOrNull(title)?.querySelector<HTMLElement>(
+      `[data-subject-more="${side}"]`,
+    ) ?? null;
+
+  /** 4 个主体（2 用户 + 2 执行主体）的成员表。 */
+  function fourSubjects() {
+    return [
+      member({
+        subject_type: "user",
+        subject_id: "7",
+        user_id: 7,
+        name: "张三",
+      }),
+      member({
+        subject_type: "user",
+        subject_id: "8",
+        user_id: 8,
+        name: "李四",
+      }),
+      member({ subject_type: "agent", subject_id: "agent-a", name: "Bot One" }),
+      member({ subject_type: "team", subject_id: "team-1", name: "Squad" }),
+    ];
+  }
+
+  it("★★ 2 用户 + 2 执行主体 ⇒ 卡片上**真的渲染 4 个主体** + `→` + 执行主体名", async () => {
+    listMembersMock.mockResolvedValue(fourSubjects());
+    renderBoard([
+      task({
+        title: "四主体",
+        owners: [7, 8],
+        executors: ["agent:agent-a", "team:team-1"],
+        // 镜像列 = 后端由最终集合派生（`executors[0]` 优先，PLAN §B2.3 ④）。
+        assignee_type: "agent",
+        assignee_id: "agent-a",
+      }),
+    ]);
+    await flushMemberLoad();
+
+    // ① 头像节点 = 4（N=2 用户 + M=2 执行主体 ⇒ 4 个主体**全部**可见，不是只显示第一个）。
+    const avatars = avatarsOf("四主体");
+    expect(avatars).toHaveLength(4);
+    // ② 顺序 = `owners` 在前、`executors` 在后（各自按数组顺序）⇒ 首字 张/李/B/S。
+    expect(avatars.map((node) => node.textContent)).toEqual([
+      "张",
+      "李",
+      "B",
+      "S",
+    ]);
+    // ③ `→` 落在「人组」与「执行主体组」之间（DOM 第 3 个子节点 = 第 3 枚主体之前）。
+    const block = subjectBlockOf("四主体");
+    expect(block.children).toHaveLength(7);
+    expect(
+      block.children[2].querySelector("svg.lucide-arrow-right"),
+    ).not.toBeNull();
+    expect(arrowOf("四主体")).not.toBeNull();
+    // ④ 名字位 = 执行主体首位名；执行主体徽标（冻结 testid）仍在。
+    expect(block.textContent).toContain("Bot One");
+    expect(badgeOf("四主体")).not.toBeNull();
+    // ⑤ 无折叠（每侧 2 枚 ⇒ `N = 0`）。
+    expect(moreOf("四主体", "owner")).toBeNull();
+    expect(moreOf("四主体", "executor")).toBeNull();
+    // ⑥ 全部主体进无障碍文本（不可只渲染 `+N` 而无文本，UIS-R-10）。
+    expect(block.getAttribute("title")).toBe("张三、李四、Bot One、Squad");
+  });
+
+  it("★ ≥8 主体（5 用户 + 3 执行主体）⇒ 每侧**前 2 + `+N`**，节点数 O(1)、不展开全部（R17）", async () => {
+    listMembersMock.mockResolvedValue([
+      ...[1, 2, 3, 4, 5].map((userId) =>
+        member({
+          subject_type: "user",
+          subject_id: String(userId),
+          user_id: userId,
+          name: `用户${userId}`,
+        }),
+      ),
+      member({ subject_type: "agent", subject_id: "a1", name: "专家一" }),
+      member({ subject_type: "agent", subject_id: "a2", name: "专家二" }),
+      member({ subject_type: "team", subject_id: "t1", name: "团队一" }),
+    ]);
+    renderBoard([
+      task({
+        title: "大样本",
+        owners: [1, 2, 3, 4, 5],
+        executors: ["agent:a1", "agent:a2", "team:t1"],
+      }),
+    ]);
+    await flushMemberLoad();
+
+    // 8 个主体 ⇒ 头像**恒 4 枚**（每侧前 2），其余折成文本 ⇒ 节点数与 N 无关。
+    expect(avatarsOf("大样本")).toHaveLength(4);
+    expect(avatarsOf("大样本").map((node) => node.textContent)).toEqual([
+      "用",
+      "用",
+      "专",
+      "专",
+    ]);
+    expect(moreOf("大样本", "owner")).toHaveTextContent("+3");
+    expect(moreOf("大样本", "executor")).toHaveTextContent("+1");
+    // 折叠掉的主体不丢信息：全部 8 个进 `title`。
+    expect(subjectBlockOf("大样本").getAttribute("title")).toBe(
+      "用户1、用户2、用户3、用户4、用户5、专家一、专家二、团队一",
+    );
+  });
+
+  it("UIS-R-07 判别性对照: `→` **仅两侧都有值**时渲染（同一次 render 三张卡对照）", async () => {
+    listMembersMock.mockResolvedValue(fourSubjects());
+    renderBoard([
+      task({
+        task_id: "tsk_both",
+        title: "两侧都有",
+        owners: [7],
+        executors: ["agent:agent-a"],
+        assignee_type: "agent",
+        assignee_id: "agent-a",
+        sort_order: 0,
+      }),
+      task({
+        task_id: "tsk_owner_only",
+        title: "只有人侧",
+        owners: [7, 8],
+        assignee_type: "user",
+        assignee_id: "7",
+        sort_order: 1,
+      }),
+      task({
+        task_id: "tsk_executor_only",
+        title: "只有执行主体侧",
+        executors: ["agent:agent-a", "team:team-1"],
+        assignee_type: "agent",
+        assignee_id: "agent-a",
+        sort_order: 2,
+      }),
+      task({
+        task_id: "tsk_none",
+        title: "两侧都空",
+        owners: [],
+        executors: [],
+        sort_order: 3,
+      }),
+    ]);
+    await flushMemberLoad();
+
+    // ① 两侧都有值 ⇒ 箭头在（证明下面的 null 不是恒真）。
+    expect(arrowOf("两侧都有")).not.toBeNull();
+    expect(avatarsOf("两侧都有")).toHaveLength(2);
+    // ② 只有一侧 ⇒ 无箭头（且该侧多值仍然渲染：2 枚头像）。
+    expect(arrowOf("只有人侧")).toBeNull();
+    expect(avatarsOf("只有人侧")).toHaveLength(2);
+    expect(arrowOf("只有执行主体侧")).toBeNull();
+    expect(avatarsOf("只有执行主体侧")).toHaveLength(2);
+    // ③ 两侧都空 ⇒ 主体块**整块不渲染**（无空壳、无占位符）。
+    expect(subjectBlockOrNull("两侧都空")).toBeNull();
+    expect(cardRootOf("两侧都空")).toBeInTheDocument();
+  });
+
+  it("合计 = 1 防回归: 数组侧单主体 ⇒ 逐字一致（无 `→`、无 `+N`，同 testid/class）", async () => {
+    listMembersMock.mockResolvedValue(fourSubjects());
+    renderBoard([task({ title: "单主体", owners: [7] })]);
+    await flushMemberLoad();
+
+    const block = subjectBlockOf("单主体");
+    expect(avatarsOf("单主体")).toHaveLength(1);
+    expect(avatarsOf("单主体")[0].textContent).toBe("张");
+    expect(avatarsOf("单主体")[0].className).toContain(styles.cardAvatar);
+    expect(block.children).toHaveLength(2);
+    expect(arrowOf("单主体")).toBeNull();
+    expect(moreOf("单主体", "owner")).toBeNull();
+    expect(moreOf("单主体", "executor")).toBeNull();
+    // 名字位仍是解析到的成员名（`Avatar` 首字 + 名字位两段文本，与改造前同构）。
+    expect(block.textContent).toBe("张张三");
+    // 单主体不写 `title`（与改造前逐字一致）。
+    expect(block.getAttribute("title")).toBeNull();
   });
 });
 

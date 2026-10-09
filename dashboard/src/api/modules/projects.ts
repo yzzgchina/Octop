@@ -124,6 +124,13 @@ export interface ProjectTask {
   assignee_type: string | null;
   assignee_id: string | null;
   /**
+   * 项目内编号 `<task_prefix>-001`（PLAN §B1.2），逐字对照后端 `TaskOut.task_number`。
+   * ★ 形态正则归 `SPEC.md`「编号形态」权威行：`^[A-Z][A-Z0-9]{1,7}-\d{3,4}$`；
+   * **生成方 = 后端**（前端只渲染，不拼接、不伪造）。可空/可缺省（迁移前的行、
+   * 旧缓存）⇒ 编号位**整块不渲染**（`SPEC.md` `B-05` / `B-06`）。
+   */
+  task_number?: string | null;
+  /**
    * 分配之「人」（PLAN §B2.1b）：元素 = `users.id`，逐字对照后端 `TaskOut.owners`。
    * ★ **恒为数组、绝不返回 `null`**（PLAN §B2.5 (a)）⇒ 调用方**不需要** `?? []`；
    * 空数组 = 未分配。权威载体是 `project_task_owners` 子表，`assignee_type` /

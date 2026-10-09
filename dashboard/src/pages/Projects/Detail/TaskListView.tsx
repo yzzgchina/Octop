@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Avatar, Input, Select, Table, Tag, Tooltip } from "antd";
+import { Input, Select, Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Bot, CircleHelp, Pencil, User, Users } from "lucide-react";
+import { Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -25,8 +25,13 @@ import {
   priorityLabelKey,
   priorityTier,
   resolveAssigneeName,
-  shortAssigneeId,
+  SubjectArrow,
+  SubjectAvatar,
+  SubjectBadge,
+  subjectDisplayName,
   tagsPreview,
+  taskNumberText,
+  taskSubjects,
 } from "./Board";
 import styles from "./TaskListView.module.less";
 
@@ -80,18 +85,6 @@ function bySortOrderThenTaskId(a: ProjectTask, b: ProjectTask): number {
   if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
   if (a.task_id === b.task_id) return 0;
   return a.task_id < b.task_id ? -1 : 1;
-}
-
-/**
- * Fallback glyph per assignee type (SPEC §3 `R-09`): `user`→`User` ·
- * `agent`→`Bot` · `team`→`Users` · anything else→`CircleHelp`. Same vocabulary
- * as the board card, same 4-icon set (`UI.md` @227 allows lucide-react only).
- */
-function assigneeIcon(type: string | null | undefined) {
-  if (type === "user") return User;
-  if (type === "agent") return Bot;
-  if (type === "team") return Users;
-  return CircleHelp;
 }
 
 /**
@@ -265,36 +258,72 @@ export default function TaskListView({
   };
 
   const renderAssignee = (task: ProjectTask) => {
-    // B-03：`assignee_type` 与 `assignee_id` **两者均非空**才算有负责人 ——
-    // 单边为空按畸形数据处理，保留既有 `DASH` 口径（列表侧不同形、同源）。
-    if (!task.assignee_type || !task.assignee_id) return DASH;
-    const name = resolveAssigneeName(
-      nameByKey,
-      task.assignee_type,
-      task.assignee_id,
-    );
-    const Icon = assigneeIcon(task.assignee_type);
+    // 主体位展示模型与卡片**同源**（`Board.tsx · taskSubjects()`，本文件不再自行展开）。
+    const subjects = taskSubjects(task);
+    // B-03：两侧都空 ⇒ 既有 `DASH` 口径（列表侧不同形、与卡片同源）。
+    if (subjects.total === 0) return DASH;
+    if (subjects.total === 1 && subjects.single) {
+      // 合计 = 1 ⇒ 与改造前**逐字一致**（同 DOM / 同 testid / 同 class / 同兜底文本）。
+      const single = subjects.single;
+      return (
+        <span className={styles.assigneeSlot}>
+          <SubjectAvatar
+            subject={single}
+            name={resolveAssigneeName(nameByKey, single.type, single.id)}
+            className={styles.cardAvatar}
+          />
+          {isAgentLike(single.type) ? (
+            <SubjectBadge subject={single} className={styles.cardAgentBadge} />
+          ) : null}
+          {/* 兜底 = `type:#末6位`（R-09）：绝不空白、绝不出现 `null:` / `undefined:`。 */}
+          <span className={styles.assigneeName}>
+            {subjectDisplayName(nameByKey, single)}
+          </span>
+        </span>
+      );
+    }
+    // 两侧合计 ≥ 2 ⇒ `[人·头像组] → [执行主体·头像组] + [名字]`（UI-SPEC §8.3）。
+    const lead = subjects.executors[0] ?? subjects.owners[0] ?? null;
+    const names = [...subjects.owners, ...subjects.executors]
+      .map((ref) => subjectDisplayName(nameByKey, ref))
+      .join("、");
     return (
-      <span className={styles.assigneeSlot}>
-        <Avatar
-          size={28}
-          className={styles.cardAvatar}
-          data-testid="task-card-assignee-avatar"
-          icon={name ? undefined : <Icon size={14} />}
-        >
-          {name ? name.charAt(0) : null}
-        </Avatar>
-        {isAgentLike(task.assignee_type) ? (
-          <span
-            className={styles.cardAgentBadge}
-            data-testid="task-card-agent-badge"
-          >
-            <Icon size={14} />
+      <span className={styles.assigneeSlot} title={names}>
+        {subjects.ownerShown.map((ref) => (
+          <SubjectAvatar
+            key={memberKey(ref.type, ref.id)}
+            subject={ref}
+            name={resolveAssigneeName(nameByKey, ref.type, ref.id)}
+            className={styles.cardAvatar}
+          />
+        ))}
+        {subjects.ownerMore > 0 ? (
+          <span className={styles.cardChipMore} data-subject-more="owner">
+            {`+${subjects.ownerMore}`}
           </span>
         ) : null}
-        {/* 兜底 = `type:#末6位`（R-09）：绝不空白、绝不出现 `null:` / `undefined:`。 */}
+        {subjects.showArrow ? <SubjectArrow /> : null}
+        {subjects.executorShown.map((ref) => (
+          <SubjectAvatar
+            key={memberKey(ref.type, ref.id)}
+            subject={ref}
+            name={resolveAssigneeName(nameByKey, ref.type, ref.id)}
+            className={styles.cardAvatar}
+          />
+        ))}
+        {subjects.executorMore > 0 ? (
+          <span className={styles.cardChipMore} data-subject-more="executor">
+            {`+${subjects.executorMore}`}
+          </span>
+        ) : null}
+        {subjects.executors.length > 0 ? (
+          <SubjectBadge
+            subject={subjects.executors[0]}
+            className={styles.cardAgentBadge}
+          />
+        ) : null}
         <span className={styles.assigneeName}>
-          {name ?? `${task.assignee_type}:${shortAssigneeId(task.assignee_id)}`}
+          {lead === null ? "" : subjectDisplayName(nameByKey, lead)}
         </span>
       </span>
     );
@@ -355,6 +384,16 @@ export default function TaskListView({
       render: (_, row) =>
         isTaskRow(row) ? (
           <span className={styles.titleCell}>
+            {/* 编号位（`task_number`，与卡片同源同 testid）：缺失/形态不符 ⇒ 整块不渲染
+                （`SPEC.md` `B-05` / `B-06`；编号归后端生成，前端不拼接、不伪造）。 */}
+            {taskNumberText(row.task.task_number) ? (
+              <span
+                className={styles.assigneeName}
+                data-testid="task-card-number"
+              >
+                {taskNumberText(row.task.task_number)}
+              </span>
+            ) : null}
             {/* PLAN §4.1（本轮 G4 推翻 S8(b) 的「纯文本」一半）：标题 = **导航**入口，
                 可点击 + 键盘可达（原生 button 自带 Enter/Space）+ aria-label 含标题；
                 未传 `onOpenTask` 时退化为纯文本（不留假交互）。
