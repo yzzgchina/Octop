@@ -925,11 +925,30 @@ describe("P2-5 编辑回填走**唯一**适配器（与新建同源）", () => {
 
     await userEvent.click(screen.getByTestId("task-detail-edit"));
     const dialog = await screen.findByRole("dialog");
-    // 双主体两类各 2 个，回填后**一个都不能少**（P2-12 的 chip 摘要口径）。
-    await waitFor(() =>
-      expect(dialog.textContent ?? "").toContain(
-        "user:7、user:8、agent:agent-a、team:backend",
-      ),
+    // ★ P2-6 重指向：双主体**分列两枚独立 chip**（PLAN §CD ②），摘要走**共享展示模型**
+    //   `Board.subjectDisplayName`（本夹具成员有 `name` ⇒ 显示名字），形态 = `{首项名} +{N}`
+    //   （UI-SPEC §5.3 UIS-T-03）。两类各 2 个 ⇒ 两侧都必须恰好折叠 1 枚（`+1`）。
+    await waitFor(() => expect(dialog.textContent ?? "").toContain("张三 +1"));
+    expect(dialog.textContent ?? "").toContain("Bot One +1");
+    // ★ 身份判据（「一个都不能少」的等价替身）：两枚 chip 的 popover 内，4 个回填主体
+    //   逐一处于选中态 —— 只数「+1」会放过「换成别的成员但数量对」的假绿。
+    await userEvent.click(
+      screen.getByRole("button", { name: "projects.chipAssignee" }),
     );
+    for (const ref of ["user:7", "user:8"]) {
+      expect(await screen.findByRole("button", { name: ref })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    }
+    await userEvent.click(
+      screen.getByRole("button", { name: "projects.chipAgent" }),
+    );
+    for (const ref of ["agent:agent-a", "team:backend"]) {
+      expect(await screen.findByRole("button", { name: ref })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    }
   });
 });

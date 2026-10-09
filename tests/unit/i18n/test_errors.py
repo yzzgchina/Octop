@@ -244,8 +244,13 @@ def test_dashboard_projects_namespace_is_paired_and_localized():
     # 208+4+22+4+1 = 239, + 6 batch 8 (PLAN §5) = 245, + 2 batch 19 = 247, + 7 batch 12 = 254,
     # + 1 A6 ``projects.tagNameInvalid`` (PLAN §A6.2) = 255,
     # + 1 A-TAGS-FIX ``projects.tagColorInvalid`` = 256,
-    # + 8 batch 20 (T-86 项目记忆 Tab：tabMemory + memoryEmpty/Hint/Denied/Hint/Error/NoAgent/Hint) = 264.
-    assert len(zh["projects"]) == 264
+    # + 8 batch 20 (T-86 项目记忆 Tab：tabMemory + memoryEmpty/Hint/Denied/Hint/Error/NoAgent/Hint) = 264,
+    # ★ P2-6 现读更正：本条水位在 HEAD 3bb5e1e5 上已**失真** —— 现读 `zh["projects"]` = **271**，
+    #   而锁定值为 264 ⇒ 6 条断言在开工前**已红**（非本卡引入）。按卡面「N 一律现读，禁止写死」
+    #   取现读值，并在其上 + 本卡新增的 5 键 = **276**。
+    # + 5 C4-CREATE (P2-6 TaskCreateModal 多主体改造：chipAgent + noUserMembers + noAgentMembers
+    #   + pickerGroupTeams + pickerGroupExperts) = 276.
+    assert len(zh["projects"]) == 276
     # R6 copy change: values only, keys untouched.
     assert zh["projects"]["taskStatusReview"] == "审核中"
     assert zh["projects"]["taskStatusBlocked"] == "已阻塞"
@@ -420,7 +425,7 @@ def test_batch2_projects_keys_exist_in_both_locales():
         assert key in zh["projects"], f"zh projects.{key} missing"
         assert key in en["projects"], f"en projects.{key} missing"
         assert en["projects"][key] != "", f"en projects.{key} is empty"
-    assert len(zh["projects"]) == 264 and len(en["projects"]) == 264
+    assert len(zh["projects"]) == 276 and len(en["projects"]) == 276
 
 
 # ── batch 3 (T-I18N3): edit-dialog labels + two rejection codes ──────────────
@@ -576,7 +581,7 @@ def test_batch4_project_keys_are_localized_per_key():
         # L10: the PLAN table's bold / footnote markers are never part of a value.
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 264 and len(en["projects"]) == 264
+    assert len(zh["projects"]) == 276 and len(en["projects"]) == 276
     # The interpolation placeholder must survive transcription verbatim.
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert en["projects"]["quickInputTarget"] == "To {{name}}"
@@ -639,7 +644,7 @@ def test_qi_recipient_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 264 and len(en["projects"]) == 264
+    assert len(zh["projects"]) == 276 and len(en["projects"]) == 276
     # The reused strings must keep their existing wording (no silent redefinition).
     assert zh["projects"]["quickInputTarget"] == "发给 {{name}}"
     assert zh["projects"]["quickInputNoAgent"] == "请先在项目配置中绑定专家。"
@@ -662,7 +667,7 @@ def test_batch6_picker_empty_teams_is_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 264 and len(en["projects"]) == 264
+    assert len(zh["projects"]) == 276 and len(en["projects"]) == 276
     # The reused keys must keep their wording: this batch adds exactly one key.
     assert set(_T_P6_I18N_PROJECT_KEYS) <= set(zh["projects"])
     for reused, expected in (
@@ -700,7 +705,7 @@ def test_batch8_feed_keys_are_localized_per_key():
         assert en["projects"][key] == en_value, key
         for value in (zh["projects"][key], en["projects"][key]):
             assert "**" not in value and "※" not in value, key
-    assert len(zh["projects"]) == 264 and len(en["projects"]) == 264
+    assert len(zh["projects"]) == 276 and len(en["projects"]) == 276
     # Keys the feed keeps rendering must survive (reused, never redefined).
     for reused in ("tabDynamic", "dynamicPlaceholder", "taskDetailTimeline"):
         assert reused in zh["projects"], reused

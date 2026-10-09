@@ -202,8 +202,12 @@ describe("P2-12 · 双主体写入面（线级：真实 request() → fetch）",
     );
 
     // 一个 user 主体（owners 侧）+ 一个 agent 主体（executors 侧）。
+    // ★ P2-6 重指向（**只改定位器，不改任何语义断言**）：`P2-6` / PLAN §CD ② 把既有
+    //   那个「人 + 智能体」合体 chip 拆成**两个独立 picker** —— `user` 行只在
+    //   `projects.chipAssignee`，`agent` / `team` 行只在 `projects.chipAgent`。本用例
+    //   断言的仍是「同一次提交里 owners 与 executors 各自带值」这件事本身。
     await toggleMember(user, "projects.chipAssignee", "user:7");
-    await toggleMember(user, "projects.chipAssignee", "agent:agent-a");
+    await toggleMember(user, "projects.chipAgent", "agent:agent-a");
 
     await user.click(createSubmit());
 
@@ -308,7 +312,8 @@ describe("P2-12 · 双主体写入面（线级：真实 request() → fetch）",
       ).toBeInTheDocument(),
     );
     await toggleMember(user, "projects.chipAssignee", "user:7");
-    await toggleMember(user, "projects.chipAssignee", "agent:agent-a");
+    // ★ P2-6 重指向（只改定位器）：智能体现在在 `projects.chipAgent`。
+    await toggleMember(user, "projects.chipAgent", "agent:agent-a");
     await user.click(
       screen.getByRole("button", { name: /projects\.editTaskSubmit/ }),
     );
@@ -356,7 +361,8 @@ describe("P2-12 · 双主体写入面（线级：真实 request() → fetch）",
       ).toBeInTheDocument(),
     );
     // 只加 executor：集合由 ["agent:agent-a"] 变为两个元素。
-    await toggleMember(user, "projects.chipAssignee", "team:backend");
+    // ★ P2-6 重指向（只改定位器）：`team` 行现在只在 `projects.chipAgent`。
+    await toggleMember(user, "projects.chipAgent", "team:backend");
     await user.click(
       screen.getByRole("button", { name: /projects\.editTaskSubmit/ }),
     );

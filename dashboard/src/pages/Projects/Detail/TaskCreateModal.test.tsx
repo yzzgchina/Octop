@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
   createEvent,
@@ -178,10 +180,13 @@ describe("TaskCreateModal（R3 / AC-U-8）", () => {
       screen.getAllByText("projects.chipCustomFields").length,
     ).toBeGreaterThan(0);
     expect(screen.getByText("备注")).toBeInTheDocument();
-    // 附件 / 切换到智能体 / 继续创建 / 提交。
+    // 附件 / 智能体 chip / 继续创建 / 提交。
     expect(screen.getByLabelText("projects.attachFile")).toBeInTheDocument();
+    // ★ P2-6 重指向（**只改定位器，不改语义**）：入口上移（PLAN §CD ①）后，「切换到
+    //   智能体」那枚底部 chip 已退场，同一个入口现在是 chip 行第 4 枚「智能体」
+    //   （`projects.chipAgent`），文案零出现（UI-SPEC §3.1 UIS-C-03）。
     expect(
-      screen.getByRole("button", { name: "projects.switchToAgent" }),
+      screen.getByRole("button", { name: "projects.chipAgent" }),
     ).toBeInTheDocument();
     expect(screen.getByText("projects.createAndContinue")).toBeInTheDocument();
     expect(submitButton()).toBeInTheDocument();
@@ -310,12 +315,15 @@ describe("TaskCreateModal（R3 / AC-U-8）", () => {
     expect(onCreated).toHaveBeenCalled();
   });
 
-  it("FIND-3/§8.1: 「切换到智能体」只写双主体数组，不发派单请求", async () => {
+  it("FIND-3/§8.1: 选择智能体只写双主体数组，不发派单请求", async () => {
     const { user } = await open("任务一");
     const before = createTaskMock.mock.calls.length;
 
+    // ★ P2-6 重指向（**只改定位器，不改任何语义断言**）：本条钉住的语义是「选择智能体
+    //   本身不发任何请求（任务尚不存在）」+「提交体只发两数组、不发旧单值对」。入口上移
+    //   （PLAN §CD ①）后该入口 = `projects.chipAgent`；下面 4 条断言**逐字未改**。
     await user.click(
-      screen.getByRole("button", { name: "projects.switchToAgent" }),
+      screen.getByRole("button", { name: "projects.chipAgent" }),
     );
     await user.click(
       await screen.findByRole("button", { name: /agent:agent-a/ }),
@@ -499,13 +507,21 @@ describe("TaskCreateModal（F4 编辑模式）", () => {
     expect(
       screen.queryByRole("button", { name: /projects\.createTaskSubmit/ }),
     ).toBeNull();
-    // Chip 摘要反映现值（状态 / 分配 / 标签）：摘要形如「标签：值」，故先按标签定位按钮。
+    // Chip 摘要反映现值（状态 / 分配 / 智能体 / 标签）：摘要形如「标签：值」，故先按标签定位按钮。
     expect(
       screen.getByRole("button", { name: /^projects\.chipStatus/ }),
     ).toHaveTextContent("projects.taskStatusDoing");
+    // ★ P2-6 重指向：`initialValues.executors = ["agent:agent-a"]` 是**执行主体**，
+    //   按 PLAN §CD ② 的归槽规则落「智能体」chip（不再是「分配」chip）。
+    //   期望文本随之从裸引用 `agent:agent-a` 变为**共享展示模型**的兜底形态
+    //   `agent:#gent-a`（`Board.subjectDisplayName` ⇒ `type:#末6位`；UIS-T-04 逐字
+    //   规定「必须与行④ assigneeFallback 同构」，其判据行即 `agent-a ⇒ agent:#gent-a`）。
+    expect(
+      screen.getByRole("button", { name: /^projects\.chipAgent/ }),
+    ).toHaveTextContent("agent:#gent-a");
     expect(
       screen.getByRole("button", { name: /^projects\.chipAssignee/ }),
-    ).toHaveTextContent("agent:agent-a");
+    ).not.toHaveTextContent("agent:agent-a");
     // ★ The tag *names* come from the async definition read («listTags»), not
     //   from ``initialValues``: ``openEdit`` only waits for the title, so under
     //   load this summary can still be empty. Wait for the data rather than the
@@ -738,8 +754,10 @@ describe("TaskCreateModal（F4 编辑模式）", () => {
     {
       field: "executors",
       change: async (user: UserEvent) => {
+        // ★ P2-6 重指向（只改定位器）：`agent` / `team` 行现在在「智能体」chip。
+        //   `expected` 逐字未改 —— 断言的仍是「提交体恰好带 executors」。
         await user.click(
-          screen.getByRole("button", { name: "projects.chipAssignee" }),
+          screen.getByRole("button", { name: "projects.chipAgent" }),
         );
         await user.click(
           await screen.findByRole("button", { name: "agent:agent-a" }),
@@ -809,4 +827,412 @@ describe("TaskCreateModal（F4 编辑模式）", () => {
       expect(onSubmitEditMock.mock.calls[0][0]).toEqual(expected);
     },
   );
+});
+
+// ── P2-6 · 多主体弹窗（PLAN §CD · C4-CREATE 五项契约 / UI-SPEC §3–§7） ──────────
+//
+// 本段逐条钉住本卡的四项交付：① 入口上移 ② 两个**独立**多选 picker ③ 空态
+// ④ 编辑复用（含「重开必须显式播种」）。每一条都能被一次注入打红 —— 对照见
+// `team/2026-10-08-110000/EVIDENCE-P2-6.md` §4（I1–I9）。
+
+/** 富样本：2 用户（有名字）+ 1 专家（`agent`）+ 1 团队 + 1 取值域外伪成员。 */
+const MULTI_MEMBERS: ProjectMember[] = [
+  {
+    subject_type: "user",
+    subject_id: "7",
+    user_id: 7,
+    role: "owner",
+    created_at: 1,
+    name: "张三",
+  },
+  {
+    subject_type: "user",
+    subject_id: "8",
+    user_id: 8,
+    role: "member",
+    created_at: 1,
+    name: "李四",
+  },
+  {
+    subject_type: "agent",
+    subject_id: "agent-a",
+    user_id: null,
+    role: "member",
+    created_at: 1,
+    name: "Bot One",
+  },
+  {
+    subject_type: "team",
+    subject_id: "backend",
+    user_id: null,
+    role: "member",
+    created_at: 1,
+    name: "Squad",
+  },
+  // ★ 取值域外的脏数据（`ProjectSubjectType = user | agent | team`）：两个 popover 都必须
+  //   **静默丢弃**它且不报错（UI-SPEC §4.4 互斥矩阵末行 / UIS-X-04）。双重断言**只**出现在
+  //   本测试夹具里模拟「服务端返回了未知类型」——生产代码一行类型都没有放宽。
+  {
+    subject_type: "robot",
+    subject_id: "r1",
+    user_id: null,
+    role: "member",
+    created_at: 1,
+    name: "R2",
+  } as unknown as ProjectMember,
+];
+
+const chip = (key: string) =>
+  screen.getByRole("button", { name: `projects.${key}` });
+
+/** chip 行上各 chip 的可见文本前缀（`：` 之前的标签部分）。 */
+function chipRowLabels(): string[] {
+  const toolbar = screen.getByTestId("project-chip-toolbar");
+  return Array.from(toolbar.querySelectorAll("button")).map(
+    (button) => (button.textContent ?? "").split("：")[0],
+  );
+}
+
+/** Mounts the create dialog against a given member feed. */
+async function mountMulti(
+  members: ProjectMember[] = MULTI_MEMBERS,
+): Promise<{ user: UserEvent }> {
+  listMembersMock.mockReset().mockResolvedValue(members);
+  render(
+    <TaskCreateModal
+      open
+      projectId="prj_1"
+      tasks={[]}
+      canEdit
+      onClose={vi.fn()}
+      onCreated={vi.fn()}
+    />,
+  );
+  const user = userEvent.setup();
+  await waitFor(() => expect(chip("chipAssignee")).toBeInTheDocument());
+  return { user };
+}
+
+describe("P2-6 · TaskCreateModal 多主体改造（C4-CREATE）", () => {
+  beforeEach(() => {
+    getMock
+      .mockReset()
+      .mockResolvedValue({ project_id: "prj_1", name: "Apollo" });
+    createTaskMock.mockReset().mockResolvedValue({ task_id: "tsk_1" });
+    dispatchTaskMock.mockReset();
+    listMembersMock.mockReset().mockResolvedValue(MULTI_MEMBERS);
+    listTagsMock.mockReset().mockResolvedValue([]);
+    listFieldsMock.mockReset().mockResolvedValue([]);
+    uploadMock.mockReset();
+    deleteAttachmentMock.mockReset().mockResolvedValue({ deleted: true });
+    messageSuccessMock.mockReset();
+    messageErrorMock.mockReset();
+  });
+
+  it("① 入口上移：chip 行 7 枚按冻结顺序排列，底部那枚与 footerButton 包裹层一齐退场", async () => {
+    await mountMulti();
+
+    // PLAN §CD ① / UI-SPEC §3.1 K1 的冻结顺序（既有 5 枚相对先后逐位不变）。
+    expect(chipRowLabels()).toEqual([
+      "projects.chipStatus",
+      "projects.chipPriority",
+      "projects.chipAssignee",
+      "projects.chipAgent",
+      "projects.chipTags",
+      "projects.chipProject",
+      "projects.chipMore",
+    ]);
+    // 入口退场：`switchToAgent` 文案在弹窗 DOM 内**零出现**（UIS-C-03）。
+    expect(
+      screen.queryByRole("button", { name: "projects.switchToAgent" }),
+    ).toBeNull();
+    // 底部包裹层一并移除（UIS-C-02）——它曾是唯一会让 chip 与其它 flex item 错位的层。
+    expect(document.querySelectorAll('[class*="footerButton"]').length).toBe(0);
+  });
+
+  it("②-a 分配 picker：候选**只有** user（无 agent / team / 未知类型，且不读全局目录）", async () => {
+    const { user } = await mountMulti();
+
+    await user.click(chip("chipAssignee"));
+
+    for (const key of ["user:7", "user:8"]) {
+      expect(
+        await screen.findByRole("button", { name: key }),
+      ).toBeInTheDocument();
+    }
+    // 互斥：人侧 popover 里**永不出现**执行主体或未知类型（UIS-X-01/X-02/X-04）。
+    for (const key of ["agent:agent-a", "team:backend", "robot:r1"]) {
+      expect(screen.queryByRole("button", { name: key })).toBeNull();
+    }
+    // 可见文本是**名字**，机器键只在 `aria-label`（UIS-P-05）。
+    expect(
+      screen.getByRole("button", { name: "user:7" }).textContent,
+    ).toContain("张三");
+    expect(
+      screen.getByRole("button", { name: "user:7" }).textContent,
+    ).not.toContain("user:7");
+  });
+
+  it("②-b 智能体 picker：候选**只有** agent / team，且分「团队 / 专家」两组", async () => {
+    const { user } = await mountMulti();
+
+    await user.click(chip("chipAgent"));
+
+    for (const key of ["agent:agent-a", "team:backend"]) {
+      expect(
+        await screen.findByRole("button", { name: key }),
+      ).toBeInTheDocument();
+    }
+    // 互斥：执行主体侧**永不出现** user 或未知类型（UIS-X-01/X-03/X-04）。
+    for (const key of ["user:7", "user:8", "robot:r1"]) {
+      expect(screen.queryByRole("button", { name: key })).toBeNull();
+    }
+    // 两组都有成员 ⇒ 两个组标题都在（UIS-P-09）。
+    expect(screen.getByText("projects.pickerGroupTeams")).toBeInTheDocument();
+    expect(screen.getByText("projects.pickerGroupExperts")).toBeInTheDocument();
+    // 分组是**视觉**区分，机器键仍是 `type:id`（UIS-P-11 同源口径）。
+    expect(
+      screen.getByRole("button", { name: "team:backend" }).textContent,
+    ).toContain("Squad");
+  });
+
+  it("②-c 智能体分组：某一组为空 ⇒ 该组标题不渲染（不留空壳，UIS-P-09）", async () => {
+    const { user } = await mountMulti(
+      MULTI_MEMBERS.filter((member) => member.subject_type === "agent"),
+    );
+
+    await user.click(chip("chipAgent"));
+
+    expect(
+      await screen.findByRole("button", { name: "agent:agent-a" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("projects.pickerGroupExperts")).toBeInTheDocument();
+    expect(screen.queryByText("projects.pickerGroupTeams")).toBeNull();
+  });
+
+  it("②-d 多选 + 提交体：分配选 2 人、智能体选 1 团队 1 专家 ⇒ owners.length===2 && executors.length===2", async () => {
+    const { user } = await mountMulti();
+    await user.type(titleInput(), "多主体任务");
+
+    await user.click(chip("chipAssignee"));
+    await user.click(await screen.findByRole("button", { name: "user:7" }));
+    await user.click(await screen.findByRole("button", { name: "user:8" }));
+    // 多选而非单选替换：第一项仍保持选中。
+    expect(screen.getByRole("button", { name: "user:7" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await user.click(chip("chipAgent"));
+    await user.click(
+      await screen.findByRole("button", { name: "team:backend" }),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "agent:agent-a" }),
+    );
+
+    await user.click(submitButton());
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+    const body = createTaskMock.mock.calls[0][1];
+    expect(body.owners).toHaveLength(2);
+    expect(body.executors).toHaveLength(2);
+    // RC-16 ②：executors 里 `team:` 与 `agent:` **各 1**。
+    expect(
+      body.executors.filter((ref: string) => ref.startsWith("team:")),
+    ).toHaveLength(1);
+    expect(
+      body.executors.filter((ref: string) => ref.startsWith("agent:")),
+    ).toHaveLength(1);
+    expect(body.assignee_type).toBeUndefined();
+    expect(body.assignee_id).toBeUndefined();
+  });
+
+  it("③-a 空态可保存：两项都不选 ⇒ 两 chip 只有标签、无 alert、按钮可点、保存成功且两数组为 []", async () => {
+    const { user } = await mountMulti();
+    await user.type(titleInput(), "无主体任务");
+
+    // 未选 ⇒ chip 文本 = 标签本身（`ChipButton` 的 `summary ? … : label`，零新增空态代码）。
+    expect(chip("chipAssignee").textContent).toBe("projects.chipAssignee");
+    expect(chip("chipAgent").textContent).toBe("projects.chipAgent");
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
+    expect(submitButton()).toBeEnabled();
+
+    await user.click(submitButton());
+    await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+    const body = createTaskMock.mock.calls[0][1];
+    expect(body.owners).toEqual([]);
+    expect(body.executors).toEqual([]);
+    expect(messageErrorMock).not.toHaveBeenCalled();
+  });
+
+  it("③-b 空候选：智能体 chip **不禁用**，点开显示 `noAgentMembers`（禁用会让空态永远看不到）", async () => {
+    const { user } = await mountMulti(
+      MULTI_MEMBERS.filter((member) => member.subject_type === "user"),
+    );
+
+    // UIS-X-08：禁用时 `ChipButton` 根本不渲染 Popover ⇒ 空态说明不可达。
+    expect(chip("chipAgent")).not.toHaveAttribute("aria-disabled");
+    await user.click(chip("chipAgent"));
+    expect(
+      await screen.findByText("projects.noAgentMembers"),
+    ).toBeInTheDocument();
+  });
+
+  it("③-c 空候选：分配 chip 同理显示 `noUserMembers`", async () => {
+    const { user } = await mountMulti(
+      MULTI_MEMBERS.filter(
+        (member) =>
+          member.subject_type === "agent" || member.subject_type === "team",
+      ),
+    );
+
+    expect(chip("chipAssignee")).not.toHaveAttribute("aria-disabled");
+    await user.click(chip("chipAssignee"));
+    expect(
+      await screen.findByText("projects.noUserMembers"),
+    ).toBeInTheDocument();
+  });
+
+  it("③-d 零成员：两 chip 都不禁用，各自显示**自己的**空态文案（不再共用 `noMembers`）", async () => {
+    const { user } = await mountMulti([]);
+
+    await user.click(chip("chipAssignee"));
+    expect(
+      await screen.findByText("projects.noUserMembers"),
+    ).toBeInTheDocument();
+    await user.click(chip("chipAgent"));
+    expect(
+      await screen.findByText("projects.noAgentMembers"),
+    ).toBeInTheDocument();
+  });
+
+  it("④-a 编辑复用：两个 picker 各回填 2/2，各移除 1 个 ⇒ patch owners / executors 各只剩 1", async () => {
+    const onSubmitEdit = vi.fn().mockResolvedValue(undefined);
+    listMembersMock.mockResolvedValue(MULTI_MEMBERS);
+
+    render(
+      <TaskCreateModal
+        open
+        mode="edit"
+        projectId="prj_1"
+        tasks={[task()]}
+        canEdit
+        onClose={vi.fn()}
+        onCreated={vi.fn()}
+        initialValues={editInitialValues({
+          owners: [7, 8],
+          executors: ["agent:agent-a", "team:backend"],
+        })}
+        onSubmitEdit={onSubmitEdit}
+      />,
+    );
+    const user = userEvent.setup();
+    await waitFor(() => expect(titleInput()).toHaveValue("原任务"));
+
+    // chip 摘要 = `{首项名} +{N}`（UI-SPEC §5.3 UIS-T-03）：两侧各 2 个 ⇒ 各折叠 1 枚。
+    expect(chip("chipAssignee")).toHaveTextContent("张三 +1");
+    expect(chip("chipAgent")).toHaveTextContent("Bot One +1");
+
+    // 回填的**身份**判据：4 个主体逐一在选中态（只数「+1」会放过「换人但数量对」）。
+    await user.click(chip("chipAssignee"));
+    for (const key of ["user:7", "user:8"]) {
+      expect(await screen.findByRole("button", { name: key })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    }
+    // 各移除 1 个：分配侧去 user:7，智能体侧去 team:backend。
+    await user.click(screen.getByRole("button", { name: "user:7" }));
+    await user.click(chip("chipAgent"));
+    for (const key of ["agent:agent-a", "team:backend"]) {
+      expect(await screen.findByRole("button", { name: key })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    }
+    await user.click(screen.getByRole("button", { name: "team:backend" }));
+
+    await user.click(editSubmit());
+    await waitFor(() => expect(onSubmitEdit).toHaveBeenCalledTimes(1));
+    expect(onSubmitEdit.mock.calls[0][0]).toEqual({
+      owners: [8],
+      executors: ["agent:agent-a"],
+    });
+  });
+
+  it("④-b 编辑复用：编辑 A → 关 → 新建 ⇒ **不残留** A 的取值（重开必须显式播种空值）", async () => {
+    listMembersMock.mockResolvedValue(MULTI_MEMBERS);
+    const base = {
+      projectId: "prj_1",
+      tasks: [task()],
+      canEdit: true,
+      onClose: vi.fn(),
+      onCreated: vi.fn(),
+    };
+
+    const view = render(
+      <TaskCreateModal
+        {...base}
+        open
+        mode="edit"
+        initialValues={editInitialValues({
+          title: "任务 A",
+          owners: [7],
+          executors: ["agent:agent-a"],
+        })}
+        onSubmitEdit={vi.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    await waitFor(() => expect(titleInput()).toHaveValue("任务 A"));
+    // 先证明**真的**预填了 A（防空转）：两枚 chip 都带值。
+    expect(chip("chipAssignee")).toHaveTextContent("张三");
+    expect(chip("chipAgent")).toHaveTextContent("Bot One");
+
+    // 关闭 ⇒ 再以**新建**模式重开（无 `initialValues`）。
+    view.rerender(
+      <TaskCreateModal
+        {...base}
+        open={false}
+        mode="edit"
+        initialValues={editInitialValues({ title: "任务 A", owners: [7] })}
+        onSubmitEdit={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByLabelText("projects.createTaskTitle")).toBeNull(),
+    );
+    view.rerender(<TaskCreateModal {...base} open mode="create" />);
+
+    await waitFor(() => expect(titleInput()).toHaveValue(""));
+    expect(descriptionInput()).toHaveValue("");
+    // ★ 核心判据：两枚 chip 回到**纯标签**空态，而不是上一次的 `张三` / `Bot One`。
+    expect(chip("chipAssignee").textContent).toBe("projects.chipAssignee");
+    expect(chip("chipAgent").textContent).toBe("projects.chipAgent");
+    void user;
+  });
+
+  it("④-c 拒绝码防线：新建/编辑**只有一个**多主体 picker 实现（无第二套）", () => {
+    const modalSource = readFileSync(
+      resolve(__dirname, "TaskCreateModal.tsx"),
+      "utf8",
+    );
+    // 唯一的行渲染器：定义 1 处、两枚 chip 各调 1 次 —— 这正是「两套实现 ⇒ failed」的判据。
+    expect(modalSource.match(/const renderSubjectPicker/g)).toHaveLength(1);
+    expect(modalSource.match(/renderSubjectPicker\(\{/g)).toHaveLength(2);
+    // `P2-12` 的合体 picker 与底部的 agent picker 都**不得**复活。
+    expect(modalSource).not.toContain("renderAssigneePicker");
+    expect(modalSource).not.toContain("renderAgentPicker");
+    // 命名空间硬约束：主体展示模型只有 `Board` 一份，本文件**不得**另立同名实现。
+    expect(modalSource).toContain('from "./Board"');
+    for (const symbol of ["memberKey", "subjectDisplayName", "taskSubjects"]) {
+      expect(modalSource).toMatch(
+        new RegExp(
+          `import\\s*\\{[\\s\\S]*?\\b${symbol}\\b[\\s\\S]*?\\}\\s*from "\\./Board"`,
+        ),
+      );
+      expect(modalSource).not.toContain(`function ${symbol}`);
+      expect(modalSource).not.toContain(`const ${symbol}`);
+    }
+  });
 });

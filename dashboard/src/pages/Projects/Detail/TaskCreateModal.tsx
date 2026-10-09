@@ -13,6 +13,7 @@ import {
   Typography,
 } from "antd";
 import {
+  Bot,
   Check,
   Flag,
   MoreHorizontal,
@@ -47,6 +48,14 @@ import {
   isTransitionAllowed,
   STATUS_LABEL_KEYS,
 } from "../utils/taskStatus";
+// The **shared** subject display model (P2-4): `taskSubjects()` is the single
+// parser for the frozen `owners` / `executors` shape, `subjectDisplayName()`
+// the single namer (name, else `type:#last6`) and `memberKey()` the single
+// lookup join key. Reusing them here is what keeps this dialog's summary
+// word-for-word identical to the card's 行④ — a second copy would fork the
+// fallback text (PLAN §CD ①/②, UIS-T-04 "必须与行④逐字同构").
+import { memberKey, subjectDisplayName, taskSubjects } from "./Board";
+import type { TaskSubjectRef } from "./Board";
 import styles from "./TaskCreateModal.module.less";
 
 const { Text } = Typography;
@@ -136,8 +145,20 @@ function toEpochSeconds(value: Dayjs | null): number | null {
   return value ? Math.floor(value.valueOf() / 1000) : null;
 }
 
-const memberLabel = (member: ProjectMember) =>
-  `${member.subject_type}:${member.subject_id}`;
+/**
+ * One row's **lookup key** — the same `"{type}:{id}"` join the card's
+ * `nameByKey` uses (`Board.memberKey`). It is the row's `aria-label` (never its
+ * visible text: UIS-P-05 moved the machine string out of the copy) and the
+ * React key, so the two pickers can never disagree about a member's identity.
+ */
+const memberRef = (member: ProjectMember): TaskSubjectRef => ({
+  type: member.subject_type,
+  id: member.subject_id,
+});
+
+/** A row's **visible** text: the member name, else its bare `subject_id` (UIS-P-03). */
+const memberRowText = (member: ProjectMember): string =>
+  (member.name ?? "").trim() || member.subject_id;
 
 /**
  * A **user** member's ``users.id`` — the only value ``owners`` carries (PLAN
@@ -152,6 +173,40 @@ function memberOwnerId(member: ProjectMember): number | null {
   if (typeof member.user_id === "number") return member.user_id;
   const parsed = Number(member.subject_id);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * An ``agent`` / ``team`` member's ``executors`` element — ``"{type}:{id}"`` via
+ * the shared ``memberKey`` join. ``user`` rows are **not** executors (V2 rejects
+ * a ``user:…`` prefix), and any unknown ``subject_type`` is not a candidate on
+ * either side, so both return ``null`` (PLAN §CD ② 的「互斥且完备」).
+ */
+function memberExecutorRef(member: ProjectMember): string | null {
+  if (member.subject_type !== "agent" && member.subject_type !== "team") {
+    return null;
+  }
+  return memberKey(member.subject_type, member.subject_id);
+}
+
+/**
+ * The two pickers' **single** row-rendering spec (PLAN §CD ②/③/⑤).
+ *
+ * The dialog renders one list of member rows; the **only** thing that differs
+ * between 分配 and 智能体 is which candidates they offer and which side of the
+ * two-subject shape they write. Both modes (create / edit) go through the same
+ * function, so "为编辑另写一套 picker" is structurally impossible.
+ */
+interface SubjectPickerSpec {
+  /** Candidates, already narrowed to this slot's subject types (never global). */
+  candidates: ProjectMember[];
+  /** Localized text when this slot has no candidate at all. */
+  emptyText: string;
+  /** Optional headings (`{ subjectType, title }`); an empty group renders no heading. */
+  groups?: { subjectType: string; title: string }[];
+  /** Is this member currently on this slot? */
+  isActive: (member: ProjectMember) => boolean;
+  /** Add / remove this member from this slot (a toggle, never a replace). */
+  onToggle: (member: ProjectMember) => void;
 }
 
 /** ``owners`` / ``executors`` order-insensitively equal (the API is set-valued). */
@@ -237,16 +292,28 @@ function descendantIds(taskId: string, tasks: ProjectTask[]): Set<string> {
  * One dialog, two modes (PLAN §5, F4).
  *
  * ``create`` (R3, SPEC AC-U-8): breadcrumb + inline title + inline description +
- * chip toolbar (status / priority / assignee / tags / project / more) +
- * attachments + "switch to agent" + "keep creating" + ⌘↵ submit.
+ * chip toolbar (status / priority / assignee / agent / tags / project / more) +
+ * attachments + "keep creating" + ⌘↵ submit.
  *
- * ``edit`` reuses **the same fields and the same validation** — no second form
- * component, no duplicated field definition — and differs only in three ways:
+ * ★ 两个多选 picker（`P2-6` / PLAN §CD ②）：「分配」只列项目成员里的 ``user``，
+ * 「智能体」只列 ``agent`` / ``team``（= 团队 / 专家）—— 两个候选集是
+ * ``ProjectSubjectType`` 的全划分，**互斥且完备**。两者都**多选**，且都走同一个
+ * ``renderSubjectPicker``，所以「多选」不在两处各写一份。已选可为空（都不是必选）：
+ * 空 ⇒ chip 只显示标签、**不报错、保存可成功**。
+ *
+ * ``edit`` reuses **the same fields, the same pickers and the same validation** —
+ * no second form component, no duplicated field definition, no edit-only picker —
+ * and differs only in three ways:
  * it seeds from ``initialValues``, it submits a **diff** through
  * ``onSubmitEdit``, and its title / button / success copy come from the
  * ``editTask*`` keys. Status still moves through the state machine: an illegal
  * target is disabled up front (PLAN S4) and the server's 409 is what the user
  * sees if one slips through — there is no optimistic local status write.
+ *
+ * ★ 复用的播种纪律（见下方 ``useEffect(…, [open])``）：本组件**不是** rc-field-form，
+ * 故 ``initialValues`` 的「只合并、不重置」之坑在此表现为 state 残留。每次 ``open``
+ * 翻真都**显式**把**全部**字段（含两个主体数组的**空值**）从 ``initialValues`` 播种
+ * 一遍 ⇒ 上一次的取值绝不残留（`P1-16` 序号 17 同款判据）。
  *
  * Keyboard (PLAN §10.1): ⌘/Ctrl+Enter submits from anywhere in the dialog,
  * a bare Enter in the title submits, Enter in the description inserts a
@@ -331,6 +398,12 @@ export default function TaskCreateModal({
     };
   }, [open, projectId]);
 
+  /**
+   * 智能体候选 = `subject_type ∈ {agent, team}` —— 与「专家 = `subject_type ===
+   * 'agent'`」的既有约定同判据（PLAN §CD ②：**不新增主体类型**，`ProjectSubjectType`
+   * 的取值域只有 `user | agent | team`）。与 `ownerCandidates` 是 `ProjectSubjectType`
+   * 的**全划分** ⇒ 两侧候选集**互斥且完备**，同一主体永不出现在两个 popover 里。
+   */
   const agentMembers = useMemo(
     () =>
       members.filter(
@@ -339,6 +412,57 @@ export default function TaskCreateModal({
       ),
     [members],
   );
+
+  /** 分配候选 = `subject_type === "user"`（PLAN §CD ② 冻结的收窄）。 */
+  const ownerCandidates = useMemo(
+    () => members.filter((member) => member.subject_type === "user"),
+    [members],
+  );
+
+  /**
+   * 成员名索引 —— 与卡片行④ `Board.tsx` 的 `nameByKey` **同键、同取值**
+   * （`memberKey(subject_type, subject_id)` ⇒ `(name ?? "").trim()`），所以摘要里的
+   * 名字解析与卡片逐字一致（UIS-T-04）。
+   */
+  const nameByKey = useMemo(
+    () =>
+      new Map(
+        members.map((member) => [
+          memberKey(member.subject_type, member.subject_id),
+          (member.name ?? "").trim(),
+        ]),
+      ),
+    [members],
+  );
+
+  /**
+   * 当前双主体选择，**只经共享展示模型** `taskSubjects()` 读（PLAN §CD ②：
+   * `executors` 的 `"type:id"` 拆分规则只有一份 —— 复用 Board 那份，不在此另写）。
+   * `assignee_type` / `assignee_id` 恒传 `null`：写入面不再走单值镜像（V3 互斥）。
+   */
+  const subjectSlots = useMemo(
+    () =>
+      taskSubjects({
+        owners,
+        executors,
+        assignee_type: null,
+        assignee_id: null,
+      }),
+    [owners, executors],
+  );
+
+  /**
+   * 「已选摘要」= 首项名 + `+{N}`（`N = 已选数 − 1`），空 ⇒ `null` ⇒ chip 只显示标签
+   * （UI-SPEC §5.3 UIS-T-03；空态**零新增代码**：`ChipButton` 的 `summary ? … : label`
+   * 天然给出 `分配` / `智能体` 两个纯标签 —— PLAN §CD ④）。
+   */
+  const selectionSummary = (refs: TaskSubjectRef[]): string | null => {
+    if (refs.length === 0) return null;
+    const head = subjectDisplayName(nameByKey, refs[0]);
+    return refs.length > 1 ? `${head} +${refs.length - 1}` : head;
+  };
+  const ownersSummary = selectionSummary(subjectSlots.owners);
+  const executorsSummary = selectionSummary(subjectSlots.executors);
 
   /** Drop staged (never bound) attachments — best effort, never blocks close. */
   const discardStaged = useCallback(
@@ -368,9 +492,14 @@ export default function TaskCreateModal({
     setKeepCreating(false);
   }, []);
 
-  // Seed once per open: create gets the empty shape, edit gets the current
-  // values. Keyed on ``open`` only — re-seeding on every render would clobber
-  // what the user is typing (the values are read through a ref).
+  // ★ 复用组件的**显式播种**（PLAN §CD ⑤ / P1-16 序号 17）：本弹窗被新建与编辑
+  // 复用（``mode`` 只切标题/按钮文案与提交路径），所以**每次 ``open`` 翻真**都必须把
+  // **全部**字段重新播种一遍 —— 包括两个主体数组的**空值**（``toValues(undefined)``
+  // 给出 ``owners: []`` / ``executors: []``）。只播种一次或依赖「初值合并」会让上一次
+  // 的取值残留（rc-field-form 的 ``initialValues`` 就是这个坑的形态；本组件用裸 state，
+  // 等价风险由本 effect 承担）。★ 判据 = 「填值 ⇒ 关 ⇒ 重开（无 initialValues）⇒ 空」。
+  // Keyed on ``open`` only — re-seeding on every render would clobber what the
+  // user is typing (the values are read through a ref).
   useEffect(() => {
     if (!open) return;
     const seeded = toValues(initialValuesRef.current);
@@ -604,11 +733,6 @@ export default function TaskCreateModal({
       return value !== undefined && value !== null && value !== "";
     }).length;
   const statusSummary = t(STATUS_LABEL_KEYS[status]);
-  /** 汇总 = 「N 用户 + M 执行主体」（PLAN §B2.1b 的双主体读法）。 */
-  const assigneeSummary =
-    owners.length + executors.length > 0
-      ? [...owners.map((id) => `user:${id}`), ...executors].join("、")
-      : null;
   const tagSummary =
     tagIds.length > 0
       ? tags
@@ -662,15 +786,27 @@ export default function TaskCreateModal({
   );
 
   /**
-   * One row per member; clicking toggles that member in **its own side** of the
-   * two-subject shape (PLAN §B2.1b): a ``user`` row joins ``owners`` as a
-   * ``users.id`` number, an ``agent`` / ``team`` row joins ``executors`` as an
-   * ``agent:<id>`` / ``team:<role>`` string. The click is **additive** (a second
-   * click removes), which is what lets one dialog carry 1..N owners *and* 1..M
-   * executors at once — the alternative, a single replace-on-click slot, can
-   * never produce both sides and would make the frozen write shape unreachable.
+   * The dialog's **one and only** subject-row list (PLAN §CD ②/③/⑤).
+   *
+   * Both pickers — 分配 (人) and 智能体 (团队 / 专家) — and both modes
+   * (create / edit) render through here; they differ **only** by `candidates`
+   * and by which side of the frozen two-subject shape `onToggle` writes. The
+   * click is a **toggle** (a second click removes), never a replace-on-click
+   * slot: that is what lets the dialog carry 1..N owners *and* 1..M executors at
+   * once and what makes each selected item individually removable. Rows are
+   * native `<button>`s, so the selected state and the removal entry are both
+   * keyboard reachable (PLAN §CD ③).
+   *
+   * The candidate list is **always** the project-member feed (`useProjectMembers`)
+   * and never the global user / agent directory (R5 / AC-U-24).
    */
-  const renderAssigneePicker = () => {
+  const renderSubjectPicker = ({
+    candidates,
+    emptyText,
+    groups,
+    isActive,
+    onToggle,
+  }: SubjectPickerSpec) => {
     if (membersLoading) {
       return (
         <div className={styles.pickerCentered}>
@@ -678,55 +814,109 @@ export default function TaskCreateModal({
         </div>
       );
     }
-    if (members.length === 0) {
+    // Empty state: this slot has no candidate at all. The text is slot-specific
+    // (`noUserMembers` / `noAgentMembers`), so "no people" and "no agents" are
+    // never confused — and the chip stays **enabled**, because a disabled chip
+    // renders no popover at all (`ChipToolbar.tsx:104`) and would hide this line.
+    if (candidates.length === 0) {
+      return <div className={styles.pickerEmpty}>{emptyText}</div>;
+    }
+    const renderRow = (member: ProjectMember) => {
+      const ref = memberRef(member);
+      const label = memberKey(ref.type, ref.id);
+      const selected = isActive(member);
+      const icon =
+        member.subject_type === "team" ? (
+          <Users size={14} aria-hidden />
+        ) : member.subject_type === "agent" ? (
+          <Bot size={14} aria-hidden />
+        ) : null;
       return (
-        <div className={styles.pickerEmpty}>{t("projects.noMembers")}</div>
+        <button
+          key={label}
+          type="button"
+          className={`${styles.option} ${selected ? styles.optionActive : ""}`}
+          // The machine key stays in the accessible name only — the visible copy
+          // is the human name (UIS-P-05), while `type:id` remains the locator.
+          aria-label={label}
+          aria-pressed={selected}
+          onClick={() => onToggle(member)}
+        >
+          <span className={styles.optionName}>
+            {icon}
+            <span className={styles.optionLabel}>{memberRowText(member)}</span>
+          </span>
+          {selected ? <Check size={14} aria-hidden /> : null}
+        </button>
+      );
+    };
+    if (groups) {
+      return (
+        <div className={styles.optionList}>
+          {groups.map((group) => {
+            const rows = candidates.filter(
+              (member) => member.subject_type === group.subjectType,
+            );
+            // 组为空 ⇒ 不渲染标题（不留空壳；UI-SPEC §4.3 UIS-P-09）。
+            if (rows.length === 0) return null;
+            return (
+              <div key={group.subjectType} className={styles.optionGroup}>
+                <div className={styles.optionGroupTitle}>{group.title}</div>
+                {rows.map(renderRow)}
+              </div>
+            );
+          })}
+        </div>
       );
     }
-    return (
-      <div className={styles.optionList}>
-        {members.map((member) => {
-          const value = memberLabel(member);
-          const ownerId = memberOwnerId(member);
-          const executorRef =
-            member.subject_type === "user" ? null : memberLabel(member);
-          const active =
-            ownerId !== null
-              ? owners.includes(ownerId)
-              : executorRef !== null && executors.includes(executorRef);
-          return (
-            <button
-              key={value}
-              type="button"
-              className={`${styles.option} ${
-                active ? styles.optionActive : ""
-              }`}
-              onClick={() => {
-                if (ownerId !== null) {
-                  setOwners((current) =>
-                    active
-                      ? current.filter((id) => id !== ownerId)
-                      : [...current, ownerId],
-                  );
-                  return;
-                }
-                if (executorRef !== null) {
-                  setExecutors((current) =>
-                    active
-                      ? current.filter((ref) => ref !== executorRef)
-                      : [...current, executorRef],
-                  );
-                }
-              }}
-            >
-              <span>{value}</span>
-              {active ? <Check size={14} /> : null}
-            </button>
-          );
-        })}
-      </div>
-    );
+    return <div className={styles.optionList}>{candidates.map(renderRow)}</div>;
   };
+
+  /** 分配 picker：人侧。候选 = `user`；写入 = `owners`（`users.id`）。 */
+  const renderOwnerPicker = () =>
+    renderSubjectPicker({
+      candidates: ownerCandidates,
+      emptyText: t("projects.noUserMembers"),
+      isActive: (member) => {
+        const ownerId = memberOwnerId(member);
+        return ownerId !== null && owners.includes(ownerId);
+      },
+      onToggle: (member) => {
+        const ownerId = memberOwnerId(member);
+        if (ownerId === null) return;
+        const selected = owners.includes(ownerId);
+        setOwners((current) =>
+          selected
+            ? current.filter((id) => id !== ownerId)
+            : [...current, ownerId],
+        );
+      },
+    });
+
+  /** 智能体 picker：执行主体侧。候选 = `agent` | `team`；写入 = `executors`。 */
+  const renderExecutorPicker = () =>
+    renderSubjectPicker({
+      candidates: agentMembers,
+      emptyText: t("projects.noAgentMembers"),
+      groups: [
+        { subjectType: "team", title: t("projects.pickerGroupTeams") },
+        { subjectType: "agent", title: t("projects.pickerGroupExperts") },
+      ],
+      isActive: (member) => {
+        const ref = memberExecutorRef(member);
+        return ref !== null && executors.includes(ref);
+      },
+      onToggle: (member) => {
+        // PLAN §8.1: the dialog only writes the subject — dispatch stays an
+        // explicit task-card action, because the task does not exist yet.
+        const ref = memberExecutorRef(member);
+        if (ref === null) return;
+        const selected = executors.includes(ref);
+        setExecutors((current) =>
+          selected ? current.filter((item) => item !== ref) : [...current, ref],
+        );
+      },
+    });
 
   const renderTagPicker = () => {
     if (tags.length === 0) {
@@ -896,48 +1086,6 @@ export default function TaskCreateModal({
     </div>
   );
 
-  const renderAgentPicker = () => {
-    if (agentMembers.length === 0) {
-      return (
-        <div className={styles.pickerEmpty}>{t("projects.noMembers")}</div>
-      );
-    }
-    return (
-      <div className={styles.optionList}>
-        {agentMembers.map((member) => {
-          const ref = memberLabel(member);
-          const active = executors.includes(ref);
-          return (
-            <button
-              key={ref}
-              type="button"
-              className={`${styles.option} ${
-                active ? styles.optionActive : ""
-              }`}
-              onClick={() => {
-                // PLAN §8.1: the dialog only writes the subject — dispatch stays
-                // an explicit task-card action, because the task does not exist
-                // yet. Additive like the chip above, so N executors are reachable.
-                setExecutors((current) =>
-                  active
-                    ? current.filter((item) => item !== ref)
-                    : [...current, ref],
-                );
-              }}
-            >
-              {member.subject_type === "team" ? (
-                <Users size={14} />
-              ) : (
-                <User size={14} />
-              )}
-              <span>{ref}</span>
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-
   return (
     <Modal
       open={open}
@@ -1008,10 +1156,27 @@ export default function TaskCreateModal({
           <ChipButton
             icon={<User size={14} />}
             label={t("projects.chipAssignee")}
-            value={assigneeSummary}
+            value={ownersSummary}
             ariaLabel={t("projects.chipAssignee")}
           >
-            {renderAssigneePicker()}
+            {renderOwnerPicker()}
+          </ChipButton>
+          {/*
+            ★ 入口上移（PLAN §CD ①）：底部那枚「切换到智能体」chip 移入本行，与
+            「分配」同属「谁来做」语义族故**相邻**；既有 5 枚 chip 的相对先后**逐位
+            不变**。它复用同一个 `ChipButton`、同一组 props 形状（标签 / 值 /
+            aria-label / popover children），且**不再**被 `footerButton` span 包住 ——
+            那个 span 会作为 flex item 参与 `align-items` / `gap` 计算，是旧布局的
+            唯一来源（UI-SPEC §3.2 实现禁令 1）。popover 不经 `disabled` 关掉：候选
+            为空时 chip 仍可点开显示空态文案（UIS-X-08）。
+          */}
+          <ChipButton
+            icon={<Bot size={14} />}
+            label={t("projects.chipAgent")}
+            value={executorsSummary}
+            ariaLabel={t("projects.chipAgent")}
+          >
+            {renderExecutorPicker()}
           </ChipButton>
           <ChipButton
             icon={<TagIcon size={14} />}
@@ -1087,17 +1252,6 @@ export default function TaskCreateModal({
                 </Tooltip>
               </>
             )}
-            <span className={styles.footerButton}>
-              <ChipButton
-                icon={<User size={14} />}
-                label={t("projects.switchToAgent")}
-                value={executors.length > 0 ? executors.join("、") : null}
-                disabled={agentMembers.length === 0}
-                ariaLabel={t("projects.switchToAgent")}
-              >
-                {renderAgentPicker()}
-              </ChipButton>
-            </span>
             {editing ? null : (
               <Checkbox
                 className={styles.keepCreating}

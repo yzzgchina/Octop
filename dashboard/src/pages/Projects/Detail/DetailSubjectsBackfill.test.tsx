@@ -183,12 +183,18 @@ describe("P2-12 · index.tsx taskToValues() 双主体回填（真实页面装配
     await user.click(editButton);
 
     const title = await screen.findByLabelText("projects.createTaskTitle");
-    // 弹窗已按后端形状回填双主体：chip 摘要同时含 user 与 agent 主体。
-    const chip = await screen.findByRole("button", {
+    // 弹窗已按后端形状回填双主体。★ P2-6 重指向：`PLAN §CD ②` 把「人 + 智能体」合体
+    // chip 拆成**两枚独立 chip** —— 人侧进「分配」、执行主体侧进「智能体」；摘要文本改走
+    // **共享展示模型** `Board.subjectDisplayName`（本夹具的成员无 `name` ⇒ 兜底形态
+    // `type:#末6位`，UI-SPEC §5.3 UIS-T-04）。断言的语义（两侧都被回填）逐字未变。
+    const ownerChip = await screen.findByRole("button", {
       name: /^projects\.chipAssignee/,
     });
-    expect(chip.textContent).toContain("user:7");
-    expect(chip.textContent).toContain("agent:agent-a");
+    expect(ownerChip.textContent).toContain("user:#7");
+    const agentChip = await screen.findByRole("button", {
+      name: /^projects\.chipAgent/,
+    });
+    expect(agentChip.textContent).toContain("agent:#gent-a");
 
     // 只改标题，主体**不动** ⇒ 未改动的主体侧按三态「缺字段 = 不改」**不该出现**。
     await user.clear(title);
@@ -207,7 +213,13 @@ describe("P2-12 · index.tsx taskToValues() 双主体回填（真实页面装配
     // `taskToValues()` 没把 executors 送进弹窗，baseline 就是 `[]`，这里只会
     // 得到 `["team:backend"]`（或 `[]`）⇒ 本断言变红。
     patches.length = 0;
-    await user.click(screen.getByTestId("task-row-edit-tsk_1"));
+    // ★ 竞态护栏（原为同步 `getByTestId`）：上一步提交会**异步**关闭弹窗并重读任务列表，
+    //   冷缓存 / 高负载下同步查询会偶发 `Unable to find`（本卡实跑观测到 3 次，含
+    //   `findBy*` 默认 1s 宽限仍不够的那次）。这里只把「等待元素出现」的宽限放长到 5s ——
+    //   查询目标与后续断言语义**逐字不变**，不会掩盖任何真实缺陷（元素真缺失仍会超时红）。
+    await user.click(
+      await screen.findByTestId("task-row-edit-tsk_1", {}, { timeout: 5_000 }),
+    );
     await screen.findByLabelText("projects.createTaskTitle");
     // 人（owners）侧加第二个用户；执行主体（executors）侧加一个团队。
     await user.click(
@@ -216,6 +228,10 @@ describe("P2-12 · index.tsx taskToValues() 双主体回填（真实页面装配
     // user:7 已由回填选中（点它会**取消**，正是回填生效的旁证）；这里点未被选中的
     // user:1，使 owners 侧由 [7] 成长为 [7, 1]。
     await user.click(await screen.findByRole("button", { name: "user:1" }));
+    // ★ P2-6：执行主体侧是**另一枚** chip，必须另开它的 popover 才看得到行。
+    await user.click(
+      screen.getByRole("button", { name: "projects.chipAgent" }),
+    );
     await user.click(
       await screen.findByRole("button", { name: "team:backend" }),
     );
