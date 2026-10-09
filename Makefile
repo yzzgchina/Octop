@@ -363,4 +363,4 @@ version:
 .PHONY: audit
 audit:
 	@echo "[audit] 当前树纪律审计（只读 · 独立目标）..."
-	./.venv/bin/python scripts/audit/current_tree.py
+	$(PYTHON) scripts/audit/current_tree.py
