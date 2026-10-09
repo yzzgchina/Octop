@@ -508,7 +508,7 @@ tests/         unit/ + integration/
 ```bash
 # Backend
 make install          # pip install -e ".[dev]"
-make all              # format-all + lint + typecheck + test (ship bar)
+make all              # format-all + lint + lint-frontend + typecheck + test + test-frontend (ship bar)
 
 # Frontend (separate terminal)
 make dev-frontend     # Vite dev server on :5173 (override with VITE_DEV_PORT)
@@ -532,7 +532,7 @@ Contributions are welcome:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Run `make all` (backend) or `make check-all` (full stack) before submitting
+3. Run `make all` (ship bar) or `make check-all` before submitting
 4. Open a Pull Request
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Security issues: [SECURITY.md](SECURITY.md).
