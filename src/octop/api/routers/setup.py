@@ -240,8 +240,14 @@ async def validate_wizard_token(
 
 @router.get("/setup/status", summary="Setup wizard status")
 async def status(server: Any = Depends(get_server)) -> dict[str, Any]:
-    """Whether initial admin creation is still required and wizard password file state."""
-    wizard_path = str(Path.home() / _wizard.WIZARD_FILE_NAME)
+    """Whether initial admin creation is still required and wizard password file state.
+
+    This route is reachable without a JWT (``/api/setup/`` is JWT-exempt and the
+    SPA probes it before login), so the response must never carry a server-local
+    absolute path: echoing the resolved wizard file path leaks the server HOME
+    directory to any unauthenticated caller. The dashboard instead renders the
+    HOME-relative hint ``~/.octop/octop-login.txt``.
+    """
     password_required = _setup_password_required(server)
     um = server.user_manager
     setup_required = um is None or um.count() == 0
@@ -254,7 +260,6 @@ async def status(server: Any = Depends(get_server)) -> dict[str, Any]:
         "wizard_password_exists": (
             password_required and _wizard.read_password(Path.home()) is not None
         ),
-        "wizard_password_path": wizard_path if password_required else None,
         "database_driver": database_driver,
         "database_bound": server.database_bound,
     }
