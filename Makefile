@@ -429,3 +429,18 @@ version:
 audit:
 	@echo "[audit] 当前树纪律审计（只读 · 独立目标）..."
 	$(PYTHON) scripts/audit/current_tree.py
+
+# ─── Audit（判据面 · 只读 · ★ 独立目标 ⇒ ★ 绝不动 `all:` 那一行）──────────────────
+# ★ `AUD-C12`（`P1-17`）：`P1-7` 的 D-9 inScope 检查器迁入受管判据目录后的**独立入口**。
+#   ★ `make audit`（`scripts/audit/current_tree.py`）经 `registry.FROZEN_IDS` **已同时包含**本判据
+#     —— ★ 注册即接线：判据返回 `FAIL`/`UNKNOWN` ⇒ 入口退出码非 0 ⇒ `make audit` 失败。
+#   ★ 本目标用于**显式传参**地单独复核（承 `R8`：run 目录 / 改动来源都显式给；★ 输出里打印实际
+#     基准目录）。`AUDIT_RUN_DIR` 缺省 = `team/` 下最新的 run 目录（★ 可覆盖）。
+# ★ 解释器一律 `./.venv/bin/python`（★ 裸 `python3` = 3.9.6 ⇒ 假绿）。
+AUDIT_RUN_DIR ?= $(lastword $(sort $(wildcard team/2*/)))
+AUDIT_GIT_RANGE ?= HEAD~1..HEAD
+
+.PHONY: audit-inscope
+audit-inscope:
+	@echo "[audit-inscope] AUD-C12: inScope 残留 + 覆盖完整性预检（★ 阻断级 · 非 0 = 红）..."
+	./.venv/bin/python scripts/audit/criteria/inscope_residue.py --run-dir "$(AUDIT_RUN_DIR)" --git-range "$(AUDIT_GIT_RANGE)"
